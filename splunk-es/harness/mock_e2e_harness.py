@@ -116,6 +116,23 @@ def splunk_alert_row(match=True):
     }
 
 
+def stale_ip_alert_row():
+    """An alert that shares only the IP pair - e.g. a beacon from a PRIOR run of the
+    same action, with NO per-execution implant marker (url_path). Used to show that
+    IP-only expectations can be satisfied by a stale alert (cross-run bleed)."""
+    return {
+        "_time": _now.strftime("%Y-%m-%dT%H:%M:%S"),
+        "src_ip": SRC_IP,
+        "dst_ip": DST_IP,
+        "signature": "Prior-run beacon (no implant marker)",
+        "event_type": "notable",
+    }
+
+
+# call counter so "late_alert" can return empty first, then a match on retry
+SPLUNK_CALLS = {"n": 0}
+
+
 # ----------------------------------------------------------------------------
 # Mock Splunk ES
 # ----------------------------------------------------------------------------
@@ -147,9 +164,20 @@ class SplunkHandler(BaseHTTPRequestHandler):
         log_wire("SPLUNK", "req", f"POST {self.path}  exec_mode=oneshot")
         print(f"              SPL: {spl}")
 
-        match = SCENARIO in ("detected", "prevention", "token", "ip_only", "ipv6")
-        results = [splunk_alert_row(match=match)] if SCENARIO != "not_detected" else \
-                  [splunk_alert_row(match=False)]
+        SPLUNK_CALLS["n"] += 1
+        if SCENARIO == "late_alert":
+            # No alert on the first poll (SIEM hasn't indexed it yet), then it appears.
+            if SPLUNK_CALLS["n"] < 2:
+                results = []
+            else:
+                results = [splunk_alert_row(match=True)]
+        elif SCENARIO == "ip_bleed":
+            # A stale alert sharing only the IP pair, from a different execution.
+            results = [stale_ip_alert_row()]
+        else:
+            match = SCENARIO in ("detected", "prevention", "token", "ip_only", "ipv6")
+            results = [splunk_alert_row(match=match)] if SCENARIO != "not_detected" else \
+                      [splunk_alert_row(match=False)]
         payload = {"results": results,
                    "fields": [{"name": k} for k in results[0].keys()] if results else []}
         body = json.dumps(payload).encode()
@@ -187,7 +215,7 @@ class OpenAEVHandler(BaseHTTPRequestHandler):
         if "/injects/expectations/assets/" in self.path:
             kind = "PREVENTION" if SCENARIO == "prevention" else "DETECTION"
             payload = [build_expectation_payload(
-                kind, include_parent=(SCENARIO not in ("ip_only", "ipv6")))]
+                kind, include_parent=(SCENARIO not in ("ip_only", "ipv6", "ip_bleed")))]
             log_wire("OPENAEV", "req", f"GET {self.path}")
             self._send(200, payload)
             log_wire("OPENAEV", "res", f"200 OK (1 pending {kind} expectation)", payload)
@@ -241,7 +269,9 @@ def main():
         "SPLUNKES_PASSWORD": "s3cr3t",
         "SPLUNKES_ALERTS_INDEX": "main",
         "SPLUNKES_TIME_WINDOW": "PT1H",
-        "SPLUNKES_MAX_RETRY": "0",
+        # late_alert needs at least one retry so the collector re-polls after the
+        # SIEM finishes indexing; other scenarios stay at 0 retries to run fast.
+        "SPLUNKES_MAX_RETRY": "3" if SCENARIO == "late_alert" else "0",
         "SPLUNKES_OFFSET": "PT1S",
         "SPLUNKES_VERIFY_SSL": "false",  # mock server is plain HTTP
     })
