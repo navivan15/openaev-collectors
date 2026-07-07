@@ -641,27 +641,43 @@ class SplunkESExpectationService:
                     if target_ip_match:
                         break
 
+            has_parent_sigs = "parent_process_name" in signature_groups
             has_source_sigs = any(t in signature_groups for t in source_ip_types)
             has_target_sigs = any(t in signature_groups for t in target_ip_types)
 
             self.logger.debug(
-                f"{LOG_PREFIX} Match results - Parent: {parent_process_match}, "
+                f"{LOG_PREFIX} Match results - Parent: {parent_process_match} "
+                f"(required: {has_parent_sigs}), "
                 f"Source IP: {source_ip_match} (required: {has_source_sigs}), "
                 f"Target IP: {target_ip_match} (required: {has_target_sigs})"
             )
 
-            if not parent_process_match:
+            # A parent-process match is only REQUIRED when the expectation actually
+            # carries a parent-process signature. Network / agentless injects expose
+            # only IP signatures; demanding a parent-process match for those makes
+            # them permanently undetectable (false "Not Detected"), so gate on
+            # has_parent_sigs instead of on parent_process_match unconditionally.
+            if has_parent_sigs and not parent_process_match:
                 return False
 
             if has_source_sigs and has_target_sigs:
-                result = source_ip_match or target_ip_match
+                ip_result = source_ip_match or target_ip_match
             elif has_source_sigs:
-                result = source_ip_match
+                ip_result = source_ip_match
             elif has_target_sigs:
-                result = target_ip_match
+                ip_result = target_ip_match
             else:
-                result = True
+                ip_result = True
 
+            # Require at least one positive signal so an expectation with no usable
+            # signatures is never counted as a match.
+            if not (has_parent_sigs or has_source_sigs or has_target_sigs):
+                self.logger.debug(
+                    f"{LOG_PREFIX} No matchable signatures present - no match"
+                )
+                return False
+
+            result = ip_result
             self.logger.debug(f"{LOG_PREFIX} Final match result: {result}")
             return result
 

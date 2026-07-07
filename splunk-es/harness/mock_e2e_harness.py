@@ -49,6 +49,9 @@ AGENT_UUID = "22222222-2222-2222-2222-222222222222"
 EXPECTATION_ID = str(uuid.uuid4())
 SRC_IP = "10.0.0.5"
 DST_IP = "10.0.0.9"
+SRC_IP6 = "2001:db8::5"
+DST_IP6 = "2001:db8::9"
+IS_V6 = (len(sys.argv) > 1 and sys.argv[1] == "ipv6")
 # Parent-process signature the platform emits encodes inject+agent UUIDs
 PARENT_PROCESS = f"oaev-implant-{INJECT_UUID}-agent-{AGENT_UUID}"
 # The collector reconstructs the parent process from this exact URL-path form
@@ -61,18 +64,32 @@ END_DATE = (_now + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%S")
 SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "detected"
 
 
-def build_expectation_payload(kind="DETECTION"):
-    """The dict OpenAEV would return for a pending expectation."""
+def build_expectation_payload(kind="DETECTION", include_parent=True):
+    """The dict OpenAEV would return for a pending expectation.
+
+    include_parent=False models a network / agentless inject whose expectation
+    carries only IP signatures (no parent-process / implant signature).
+    """
+    if IS_V6:
+        sigs = [
+            {"type": "source_ipv6_address", "value": SRC_IP6},
+            {"type": "target_ipv6_address", "value": DST_IP6},
+        ]
+    else:
+        sigs = [
+            {"type": "source_ipv4_address", "value": SRC_IP},
+            {"type": "target_ipv4_address", "value": DST_IP},
+        ]
+    if include_parent:
+        sigs.append({"type": "parent_process_name", "value": PARENT_PROCESS})
+    sigs += [
+        {"type": "start_date", "value": START_DATE},
+        {"type": "end_date", "value": END_DATE},
+    ]
     return {
         "inject_expectation_id": EXPECTATION_ID,
         "inject_expectation_type": kind,
-        "inject_expectation_signatures": [
-            {"type": "source_ipv4_address", "value": SRC_IP},
-            {"type": "target_ipv4_address", "value": DST_IP},
-            {"type": "parent_process_name", "value": PARENT_PROCESS},
-            {"type": "start_date", "value": START_DATE},
-            {"type": "end_date", "value": END_DATE},
-        ],
+        "inject_expectation_signatures": sigs,
     }
 
 
@@ -81,8 +98,8 @@ def splunk_alert_row(match=True):
     if match:
         return {
             "_time": _now.strftime("%Y-%m-%dT%H:%M:%S"),
-            "src_ip": SRC_IP,
-            "dst_ip": DST_IP,
+            "src_ip": SRC_IP6 if IS_V6 else SRC_IP,
+            "dst_ip": DST_IP6 if IS_V6 else DST_IP,
             "url_path": IMPLANT_URL_PATH,
             "parent_process_name": PARENT_PROCESS,
             "signature": "OpenAEV Implant Callback",
@@ -130,7 +147,7 @@ class SplunkHandler(BaseHTTPRequestHandler):
         log_wire("SPLUNK", "req", f"POST {self.path}  exec_mode=oneshot")
         print(f"              SPL: {spl}")
 
-        match = SCENARIO in ("detected", "prevention", "token")
+        match = SCENARIO in ("detected", "prevention", "token", "ip_only", "ipv6")
         results = [splunk_alert_row(match=match)] if SCENARIO != "not_detected" else \
                   [splunk_alert_row(match=False)]
         payload = {"results": results,
@@ -169,7 +186,8 @@ class OpenAEVHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if "/injects/expectations/assets/" in self.path:
             kind = "PREVENTION" if SCENARIO == "prevention" else "DETECTION"
-            payload = [build_expectation_payload(kind)]
+            payload = [build_expectation_payload(
+                kind, include_parent=(SCENARIO not in ("ip_only", "ipv6")))]
             log_wire("OPENAEV", "req", f"GET {self.path}")
             self._send(200, payload)
             log_wire("OPENAEV", "res", f"200 OK (1 pending {kind} expectation)", payload)

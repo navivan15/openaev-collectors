@@ -144,20 +144,14 @@ class Converter:
                 )
 
             source_ips = self._extract_source_ips(alert_data)
-            if source_ips:
-                oaev_data["source_ipv4_address"] = {
-                    "type": "simple",
-                    "data": source_ips,
-                }
-                self.logger.debug(f"{LOG_PREFIX} Using source IPs: {source_ips}")
+            for key, ips in self._split_by_family(source_ips, "source").items():
+                oaev_data[key] = {"type": "simple", "data": ips}
+                self.logger.debug(f"{LOG_PREFIX} Using {key}: {ips}")
 
             target_ips = self._extract_target_ips(alert_data)
-            if target_ips:
-                oaev_data["target_ipv4_address"] = {
-                    "type": "simple",
-                    "data": target_ips,
-                }
-                self.logger.debug(f"{LOG_PREFIX} Using target IPs: {target_ips}")
+            for key, ips in self._split_by_family(target_ips, "target").items():
+                oaev_data[key] = {"type": "simple", "data": ips}
+                self.logger.debug(f"{LOG_PREFIX} Using {key}: {ips}")
 
             parent_process_name = self._extract_parent_process_name(alert_data)
             if parent_process_name:
@@ -191,6 +185,30 @@ class Converter:
             raise SplunkESDataConversionError(
                 f"Error converting Splunk ES alert data to OAEV: {e}"
             ) from e
+
+    @staticmethod
+    def _split_by_family(ips: list[str], direction: str) -> dict[str, list[str]]:
+        """Group IPs into the correct OAEV signature key by address family.
+
+        The OAEV expectation signatures distinguish IPv4 vs IPv6 (e.g.
+        ``source_ipv4_address`` vs ``source_ipv6_address``). Emitting every alert
+        IP under the IPv4 key made IPv6 detection expectations impossible to
+        match (key mismatch). Here we route each address to the matching key so
+        both families validate correctly.
+
+        Args:
+            ips: Alert IP addresses (may be v4 or v6).
+            direction: "source" or "target".
+
+        Returns:
+            Mapping of OAEV signature key -> list of addresses of that family.
+        """
+        out: dict[str, list[str]] = {}
+        for ip in ips or []:
+            family = "ipv6" if ":" in ip else "ipv4"
+            key = f"{direction}_{family}_address"
+            out.setdefault(key, []).append(ip)
+        return out
 
     def _extract_source_ips(self, alert_data: SplunkESAlert) -> list[str]:
         """Extract source IP addresses from alert data.
