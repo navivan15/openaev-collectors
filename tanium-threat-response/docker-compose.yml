@@ -1,0 +1,17 @@
+services:
+  collector-tanium-threat-response:
+    image: openaev/collector-tanium-threat-response:latest
+    environment:
+      - OPENAEV_URL=${OPENAEV_URL}
+      - OPENAEV_TOKEN=${OPENAEV_TOKEN}
+      - OPENAEV_TENANT_ID=${OPENAEV_TENANT_ID}
+      - COLLECTOR_ID=${COLLECTOR_ID}
+      - COLLECTOR_NAME=${COLLECTOR_NAME:-"Tanium Threat Response"}
+      - COLLECTOR_LOG_LEVEL=${COLLECTOR_LOG_LEVEL:-warn}
+      - COLLECTOR_PERIOD=${COLLECTOR_PERIOD:-PT1M}
+      - COLLECTOR_PLATFORM=${COLLECTOR_PLATFORM:-EDR}
+      - COLLECTOR_TANIUM_URL=${TANIUM_URL}
+      - COLLECTOR_TANIUM_URL_CONSOLE=${TANIUM_URL_CONSOLE}
+      - COLLECTOR_TANIUM_TOKEN=${TANIUM_TOKEN}
+      - COLLECTOR_TANIUM_SSL_VERIFY=${TANIUM_SSL_VERIFY:-true}
+    restart: unless-stopped

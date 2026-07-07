@@ -1,0 +1,15 @@
+openaev:
+  url: 'http://localhost:3001'
+  token: 'ChangeMe'
+# tenant_id: 'ChangeMe'
+
+collector:
+  id: 'ChangeMe'
+  name: 'Microsoft Azure'
+  period: 'PT1H'
+  log_level: 'error'
+  microsoft_azure_tenant_id: ''
+  microsoft_azure_client_id: ''
+  microsoft_azure_client_secret: ''
+  microsoft_azure_subscription_id: ''
+  microsoft_azure_resource_groups: ''  # Comma-separated list of resource groups, leave empty for all VMs in subscription

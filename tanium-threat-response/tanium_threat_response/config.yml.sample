@@ -1,0 +1,14 @@
+openaev:
+  url: 'http://localhost:3001'
+  token: 'ChangeMe'
+# tenant_id: 'ChangeMe'
+collector:
+  id: 'ChangeMe'
+  name: 'Tanium Threat Response'
+  platform: 'EDR'
+  period: 'PT1M'
+  log_level: 'error'
+  tanium_url: ''
+  tanium_url_console: ''
+  tanium_ssl_verify: ''
+  tanium_token: ''

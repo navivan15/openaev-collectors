@@ -1,0 +1,18 @@
+openaev:
+  url: 'http://localhost:3001'
+  token: 'ChangeMe'
+# tenant_id: 'ChangeMe'
+
+collector:
+  id: 'ChangeMe'
+  name: 'Microsoft Sentinel'
+  platform: 'SIEM'
+  period: 'PT1M'
+  log_level: 'error'
+  microsoft_sentinel_tenant_id: ''
+  microsoft_sentinel_client_id: ''
+  microsoft_sentinel_client_secret: ''
+  microsoft_sentinel_subscription_id: ''
+  microsoft_sentinel_workspace_id: ''
+  microsoft_sentinel_resource_group: ''
+  microsoft_sentinel_edr_collectors: ''

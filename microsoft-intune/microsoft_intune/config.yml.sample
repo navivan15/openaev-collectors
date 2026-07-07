@@ -1,0 +1,15 @@
+openaev:
+  url: 'http://localhost:3001'
+  token: 'ChangeMe'
+# tenant_id: 'ChangeMe'
+
+collector:
+  id: 'ChangeMe'
+  name: 'Microsoft Intune'
+  period: 'PT1H'
+  log_level: 'error'
+  microsoft_intune_tenant_id: ''
+  microsoft_intune_client_id: ''
+  microsoft_intune_client_secret: ''
+  microsoft_intune_device_filter: ''  # Optional OData filter e.g. "operatingSystem eq 'Windows'" or leave empty for all devices
+  microsoft_intune_device_groups: ''  # Comma-separated list of device group names or IDs, leave empty for all devices
