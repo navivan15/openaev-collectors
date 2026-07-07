@@ -98,7 +98,17 @@ class SplunkESClientAPI:
         try:
             self.base_url = str(self.config.splunk_es.base_url).rstrip("/")
             self.username = self.config.splunk_es.username
-            self.password = self.config.splunk_es.password.get_secret_value()
+            self.password = (
+                self.config.splunk_es.password.get_secret_value()
+                if self.config.splunk_es.password
+                else None
+            )
+            self.token = (
+                self.config.splunk_es.token.get_secret_value()
+                if getattr(self.config.splunk_es, "token", None)
+                else None
+            )
+            self.verify_ssl = getattr(self.config.splunk_es, "verify_ssl", True)
             self.alerts_index = self.config.splunk_es.alerts_index or "_notable"
             self.offset = self.config.splunk_es.offset.total_seconds()
             self.max_retry = self.config.splunk_es.max_retry
@@ -170,22 +180,42 @@ class SplunkESClientAPI:
             SplunkESSessionError: If session configuration fails.
 
         """
-        if not self.username or not self.password:
+        use_token = bool(self.token)
+        if not use_token and (not self.username or not self.password):
             raise SplunkESValidationError(
-                "Username and password are required for session creation"
+                "Provide either SPLUNKES_TOKEN (bearer) or both "
+                "SPLUNKES_USERNAME and SPLUNKES_PASSWORD for session creation"
             )
 
         try:
             session = requests.Session()
-            session.auth = (self.username, self.password)
-            session.headers.update(
-                {
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Accept": "application/json",
-                }
-            )
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            }
+            if use_token:
+                headers["Authorization"] = f"Bearer {self.token}"
+                self.logger.info(f"{LOG_PREFIX} Using bearer-token authentication")
+            else:
+                session.auth = (self.username, self.password)
+                self.logger.info(f"{LOG_PREFIX} Using basic authentication")
+            session.headers.update(headers)
             session.timeout = REQUEST_TIMEOUT_SECONDS
-            session.verify = False
+            session.verify = self.verify_ssl
+            if not self.verify_ssl:
+                self.logger.warning(
+                    f"{LOG_PREFIX} TLS certificate verification is DISABLED "
+                    f"(SPLUNKES_VERIFY_SSL=false). Use only for trusted lab instances."
+                )
+                # Silence the noisy urllib3 warning we opted into deliberately.
+                try:
+                    import urllib3
+
+                    urllib3.disable_warnings(
+                        urllib3.exceptions.InsecureRequestWarning
+                    )
+                except Exception:  # pragma: no cover - best effort only
+                    pass
             return session
         except Exception as e:
             raise SplunkESSessionError(f"Failed to configure session: {e}") from e

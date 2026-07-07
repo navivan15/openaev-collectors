@@ -237,6 +237,15 @@ class GenericExpectationManager:
                     )
                     continue
 
+                if getattr(result, "skip_verdict", False):
+                    skipped_count += 1
+                    self.logger.warning(
+                        f"{LOG_PREFIX} Not writing a verdict for expectation "
+                        f"{expectation_id} (skip_verdict set): {result.error_message}. "
+                        f"Leaving it pending for retry / another collector."
+                    )
+                    continue
+
                 is_valid = result.is_valid
                 expectation = result.expectation
                 if expectation:

@@ -151,6 +151,15 @@ class ExpectationResult(BaseModel):
     error_message: str | None = Field(
         None, description="Error message if processing failed"
     )
+    skip_verdict: bool = Field(
+        False,
+        description=(
+            "When True, the collector must NOT write a detection verdict for this "
+            "expectation (e.g. Splunk auth/network failure, or an unsupported "
+            "expectation type). The expectation is left pending so a transient "
+            "failure is retried instead of being mislabelled 'Not Detected'."
+        ),
+    )
     processing_time: float | None = Field(
         None, description="Time taken to process this expectation in seconds"
     )

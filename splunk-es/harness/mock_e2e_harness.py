@@ -111,13 +111,18 @@ class SplunkHandler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length).decode()
 
-        if SCENARIO == "auth_fail" or not auth.startswith("Basic "):
-            log_wire("SPLUNK", "req", f"POST {self.path} (auth={auth[:12] or 'none'})")
+        # "token" scenario must present a Bearer header; others use Basic.
+        auth_ok = auth.startswith("Bearer ") if SCENARIO == "token" \
+            else auth.startswith("Basic ")
+        if SCENARIO == "auth_fail" or not auth_ok:
+            log_wire("SPLUNK", "req", f"POST {self.path} (auth={auth[:14] or 'none'})")
             self.send_response(401)
             self.end_headers()
             self.wfile.write(b'{"messages":[{"type":"WARN","text":"login failed"}]}')
             log_wire("SPLUNK", "res", "401 Unauthorized")
             return
+        if SCENARIO == "token":
+            print(f"              (authenticated via {auth[:20]}...)")
 
         # decode the SPL query that the collector actually built
         from urllib.parse import parse_qs
@@ -125,7 +130,7 @@ class SplunkHandler(BaseHTTPRequestHandler):
         log_wire("SPLUNK", "req", f"POST {self.path}  exec_mode=oneshot")
         print(f"              SPL: {spl}")
 
-        match = SCENARIO in ("detected", "prevention")
+        match = SCENARIO in ("detected", "prevention", "token")
         results = [splunk_alert_row(match=match)] if SCENARIO != "not_detected" else \
                   [splunk_alert_row(match=False)]
         payload = {"results": results,
@@ -220,7 +225,13 @@ def main():
         "SPLUNKES_TIME_WINDOW": "PT1H",
         "SPLUNKES_MAX_RETRY": "0",
         "SPLUNKES_OFFSET": "PT1S",
+        "SPLUNKES_VERIFY_SSL": "false",  # mock server is plain HTTP
     })
+    if SCENARIO == "token":
+        # Prove bearer-token auth: drop basic creds, supply a token instead.
+        os.environ.pop("SPLUNKES_USERNAME", None)
+        os.environ.pop("SPLUNKES_PASSWORD", None)
+        os.environ["SPLUNKES_TOKEN"] = "splunk-bearer-abc123"
 
     from pyoaev.client import OpenAEV
     from pyoaev.helpers import OpenAEVDetectionHelper
@@ -272,9 +283,11 @@ def main():
         for eid, upd in bu["inputs"].items():
             print(f"   verdict written    : result='{upd.get('result')}' "
                   f"is_success={upd.get('is_success')}")
+    elif CAPTURED["individual"]:
+        print(f"   verdict written    : (individual={len(CAPTURED['individual'])})")
     else:
-        print("   verdict written    : (none via bulk; individual="
-              f"{len(CAPTURED['individual'])})")
+        print("   verdict written    : NONE - expectation left PENDING "
+              "(not mislabelled 'Not Detected')")
     tr = CAPTURED["traces"]
     if tr:
         n = len(tr.get("expectation_traces", []))

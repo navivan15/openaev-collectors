@@ -20,13 +20,30 @@ class _ConfigLoaderSplunkES(ConfigBaseSettings):
         alias="SPLUNKES_BASE_URL",
         description="Base URL for the Splunk ES instance (e.g., https://splunk.company.com:8089).",
     )
-    username: str = Field(
+    username: Optional[str] = Field(
         alias="SPLUNKES_USERNAME",
-        description="Username for Splunk ES authentication.",
+        default=None,
+        description="Username for Splunk ES basic authentication. "
+        "Ignored when SPLUNKES_TOKEN is set.",
     )
-    password: SecretStr = Field(
+    password: Optional[SecretStr] = Field(
         alias="SPLUNKES_PASSWORD",
-        description="Password for Splunk ES authentication.",
+        default=None,
+        description="Password for Splunk ES basic authentication. "
+        "Ignored when SPLUNKES_TOKEN is set.",
+    )
+    token: Optional[SecretStr] = Field(
+        alias="SPLUNKES_TOKEN",
+        default=None,
+        description="Splunk authentication token (bearer). When set, it is used "
+        "instead of username/password via an 'Authorization: Bearer <token>' "
+        "header. Preferred over basic auth for Splunk Cloud / hardened setups.",
+    )
+    verify_ssl: bool = Field(
+        alias="SPLUNKES_VERIFY_SSL",
+        default=True,
+        description="Whether to verify the Splunk TLS certificate. Defaults to True. "
+        "Set to False only for self-signed lab instances.",
     )
     alerts_index: Optional[str] = Field(
         alias="SPLUNKES_ALERTS_INDEX",

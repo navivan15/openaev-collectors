@@ -249,6 +249,7 @@ class SplunkESExpectationService:
                 is_valid=False,
                 expectation=expectation,
                 error_message="Splunk ES only supports DetectionExpectations, not PreventionExpectations",
+                skip_verdict=True,
             )
         else:
             self.logger.error(
@@ -305,6 +306,7 @@ class SplunkESExpectationService:
             is_valid=False,
             expectation=expectation,
             error_message="Splunk ES only supports DetectionExpectations, not PreventionExpectations",
+            skip_verdict=True,
         )
 
     def _handle_expectation(
@@ -723,11 +725,28 @@ class SplunkESExpectationService:
         if hasattr(error, "status_code") and error.status_code:
             error_message += f" (Status: {error.status_code})"
 
+        # Distinguish a genuine "the tool did not detect it" outcome from an
+        # infrastructure failure. Only "no alerts / no matching alerts" is a real
+        # negative detection that should be written back as "Not Detected".
+        # Auth/network/API/config failures mean we never got a trustworthy answer
+        # from Splunk, so we must NOT score them as a miss (that would make a
+        # broken integration look like a failed security control).
+        genuine_negative = isinstance(
+            error, (SplunkESNoAlertsFoundError, SplunkESNoMatchingAlertsError)
+        )
+        if not genuine_negative:
+            self.logger.error(
+                f"{LOG_PREFIX} Infrastructure error for expectation {expectation_id} "
+                f"({error.__class__.__name__}) - leaving expectation pending instead "
+                f"of scoring it 'Not Detected': {error_message}"
+            )
+
         return ExpectationResult(
             expectation_id=expectation_id,
             is_valid=False,
             expectation=expectation,
             error_message=error_message,
+            skip_verdict=not genuine_negative,
         )
 
     def _convert_dict_to_result(
