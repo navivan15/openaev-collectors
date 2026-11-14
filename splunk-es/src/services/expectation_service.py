@@ -35,7 +35,7 @@ from .exception import (
     SplunkESServiceError,
     SplunkESValidationError,
 )
-from .step_matching import KEY_MATCH, StepContext
+from .step_matching import StepContext
 
 LOG_PREFIX = "[SplunkESExpectationService]"
 
@@ -555,17 +555,10 @@ class SplunkESExpectationService:
                     )
                     return {
                         "is_valid": True,
-                        "matching_data": [
-                            {
-                                **data_item,
-                                KEY_MATCH: {
-                                    "method": "step_marker",
-                                    "field": marker_field,
-                                },
-                            }
-                        ],
+                        "matching_data": [data_item],
                         "total_data_found": len(oaev_data),
                         "match_method": "step_marker",
+                        "match_field": marker_field,
                     }
 
                 if ctx.markers and "parent_process_name" not in data_item:
@@ -610,12 +603,7 @@ class SplunkESExpectationService:
 
                             result = {
                                 "is_valid": True,
-                                "matching_data": [
-                                    {
-                                        **data_item,
-                                        KEY_MATCH: {"method": "legacy", "field": None},
-                                    }
-                                ],
+                                "matching_data": [data_item],
                                 "total_data_found": len(oaev_data),
                                 "match_method": "legacy",
                             }
@@ -939,6 +927,7 @@ class SplunkESExpectationService:
             matched_alerts=result_dict.get("matching_data"),
             error_message=result_dict.get("error"),
             match_method=result_dict.get("match_method"),
+            match_field=result_dict.get("match_field"),
         )
 
     def get_service_info(self) -> dict[str, Any]:

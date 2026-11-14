@@ -214,6 +214,10 @@ class ExpectationResult(BaseModel):
         description="How the alert was tied to the step: 'step_marker' or "
         "'legacy' (IPs + implant parent process).",
     )
+    match_field: str | None = Field(
+        None,
+        description="The alert field that carried the step marker, if any.",
+    )
     search_path: str | None = Field(
         None,
         description="Which search found (or failed to find) the alert: "

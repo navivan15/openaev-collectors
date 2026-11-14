@@ -164,6 +164,9 @@ class SplunkESTraceService:
             )
 
             alert_name = self._determine_alert_name(matching_data)
+            alert_name += self._source_suffix(
+                matching_data, getattr(result, "match_field", None)
+            )
 
             self.logger.debug(f"{LOG_PREFIX} Building trace URL from matching data...")
             trace_link = self._build_trace_url_from_expectation(result.expectation)
@@ -207,12 +210,12 @@ class SplunkESTraceService:
         self.logger.debug(
             f"{LOG_PREFIX} Creating trace from matching data {matching_data}"
         )
-        return self._base_alert_name(matching_data) + self._source_suffix(
-            matching_data
-        )
+        return self._base_alert_name(matching_data)
 
     @staticmethod
-    def _source_suffix(matching_data: dict[str, Any]) -> str:
+    def _source_suffix(
+        matching_data: dict[str, Any], match_field: str | None = None
+    ) -> str:
         """Describe where the alert was found, for the trace's alert name.
 
         OpenAEV traces only carry a name, a link and a date, so the source
@@ -222,12 +225,11 @@ class SplunkESTraceService:
         crowdstrike collector can be counted once).
         """
         source = matching_data.get("_alert_source") or {}
-        match = matching_data.get("_match") or {}
         parts = []
         for label, value in (
             ("index", source.get("index")),
             ("sourcetype", source.get("sourcetype")),
-            ("field", match.get("field")),
+            ("field", match_field),
             ("rule", source.get("rule_name")),
             ("falcon_alert_id", source.get("falcon_alert_id")),
         ):

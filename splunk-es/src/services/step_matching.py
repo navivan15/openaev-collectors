@@ -81,7 +81,6 @@ KEY_TIME = "_alert_time"
 KEY_HOSTS = "_alert_hosts"
 KEY_MARKER_FIELDS = "_alert_marker_fields"
 KEY_SOURCE = "_alert_source"  # where the alert came from (index, sourcetype, ids)
-KEY_MATCH = "_match"  # how it was matched (method, field); added on a match
 
 # Fields that hold the CrowdStrike Falcon alert id when Falcon alerts are
 # forwarded into Splunk. The `crowdstrike` collector identifies the same alert
