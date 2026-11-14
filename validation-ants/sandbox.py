@@ -1,0 +1,823 @@
+"""
+Sandbox for the validation ants: the whole pipeline on mocks, with checks.
+
+  planner -> gatekeeper -> (simulated) agent -> Splunk observer + Falcon observer
+          -> analyst -> matcher -> reporter
+
+The Splunk observer is the real splunk-es collector code talking to a mock
+Splunk. The Falcon observer talks to a mock Falcon Alerts API. The agent is
+simulated: it runs no command and only writes synthetic telemetry. No real
+Splunk, no real Falcon tenant, no real host.
+
+  python validation-ants/sandbox.py all          # every scenario, pass/fail table
+  python validation-ants/sandbox.py full_run     # one scenario with details
+  python validation-ants/sandbox.py catalogue    # scenario list as JSON
+
+Run it with the splunk-es virtualenv's Python (it has pyoaev and requests).
+"""
+
+import json
+import logging
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import threading
+from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+from ants.agent_sim import FMT, SimulatedAgent, Telemetry  # noqa: E402
+from ants.analyst import SearchAnalyst  # noqa: E402
+from ants.gatekeeper import Gatekeeper, Refused  # noqa: E402
+from ants.matcher import Matcher, RuleBook  # noqa: E402
+from ants.models import COULD_NOT_CHECK, DETECTED, MISSED, PREVENTED  # noqa: E402
+from ants.observers import FalconHttpClient, FalconObserver, SplunkObserver  # noqa: E402
+from ants.pipeline import run_validation  # noqa: E402
+from ants.planner import Planner  # noqa: E402
+from ants.reporter import Reporter  # noqa: E402
+
+SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "full_run"
+SPLUNK_PORT, FALCON_PORT = 18189, 18190
+WORK = Path(tempfile.mkdtemp(prefix="oaev-ants-"))
+TELEMETRY = Telemetry()
+MOCK = {"falcon_mode": "ok", "splunk_searches": []}
+EVENTS = []
+
+HOST1 = {"name": "WS-TEST-01", "source_ip": "10.0.0.5", "target_ip": "10.0.0.9"}
+HOST2 = {"name": "WS-TEST-02", "source_ip": "10.0.0.6", "target_ip": "10.0.0.9"}
+OUTSIDER = {"name": "WS-PROD-77", "source_ip": "10.9.9.7", "target_ip": "10.0.0.9"}
+ALL_TESTS = ["T-EXEC-001", "T-FILE-002", "T-DNS-003", "T-NET-004"]
+DNS_RULE = {"sourcetype": "stream:dns", "rule_name": "DNS lookup of rare domain", "field": "query"}
+# What the (simulated) defences do for each test.
+DEFENCES = {
+    "T-EXEC-001": {"falcon": "detect", "forward": True},
+    "T-FILE-002": {"falcon": "prevent", "forward": True,
+                   "falcon_rule": "File written to temp by script"},
+    "T-DNS-003": {"splunk_rule": DNS_RULE},
+    "T-NET-004": {},   # nothing sees it
+}
+
+
+def event(type_, **data):
+    EVENTS.append({"type": type_, **data})
+
+
+def emit(ant, title, detail="", status="ok", data=None):
+    print(f"   [{ant:<16}] {title}" + (f"\n{'':22}{detail}" if detail else ""))
+    event("ant", ant=ant, title=title, detail=detail, status=status, data=data)
+
+
+# ----------------------------------------------------------------------------
+# Mock Splunk: answers the index check and searches from the telemetry store
+# ----------------------------------------------------------------------------
+def _row_time(row):
+    return datetime.strptime(row["_time"], FMT).replace(tzinfo=timezone.utc).timestamp()
+
+
+class SplunkMock(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _json(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_GET(self):
+        self._json(200, {"entry": [{"name": "main"}]})
+
+    def do_POST(self):
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+        spl = parse_qs(raw).get("search", [""])[0]
+        base = spl.split(" | ")[0]
+        MOCK["splunk_searches"].append(spl)
+        # A small stand-in for Splunk's filtering: quoted terms and the time range.
+        # sourcetype="X" (narrow search) limits the rows; other quoted strings are terms.
+        sourcetypes = set(re.findall(r'sourcetype="([^"]+)"', base))
+        terms = [t.rstrip("*").lower() for t in re.findall(r'"([^"]+)"', base)
+                 if t not in sourcetypes]
+        earliest = int(re.search(r"earliest=(\d+)", base).group(1))
+        latest = int(re.search(r"latest=(\d+)", base).group(1))
+        rows = []
+        for row in TELEMETRY.splunk_rows:
+            if not (earliest <= _row_time(row) <= latest):
+                continue
+            if sourcetypes and row.get("sourcetype") not in sourcetypes:
+                continue
+            text = " ".join(str(v) for v in row.values()).lower()
+            if not terms or any(t in text for t in terms):
+                rows.append(row)
+        self._json(200, {"results": rows})
+
+
+# ----------------------------------------------------------------------------
+# Mock Falcon Alerts API
+# ----------------------------------------------------------------------------
+class FalconMock(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _json(self, code, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _broken(self):
+        mode = MOCK["falcon_mode"]
+        if mode == "drop":
+            self.close_connection = True
+            try:
+                self.connection.shutdown(2)
+            except OSError:
+                pass
+            return True
+        if mode == "auth":
+            self._json(401, {"errors": [{"message": "access denied"}]})
+            return True
+        if mode == "error" and "oauth2" not in self.path:
+            self._json(500, {"errors": [{"message": "internal error"}]})
+            return True
+        return False
+
+    def do_GET(self):
+        if self._broken():
+            return
+        query = unquote(urlparse(self.path).query)
+        since = re.search(r"timestamp:>'([^']+)'", query)
+        start = datetime.fromisoformat(since.group(1)) if since else None
+        ids = [a["composite_id"] for a in TELEMETRY.falcon_alerts
+               if not start or datetime.fromisoformat(
+                   a["created_timestamp"].replace("Z", "+00:00")) > start]
+        self._json(200, {"resources": ids})
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length).decode()
+        if self._broken():
+            return
+        if "oauth2/token" in self.path:
+            self._json(201, {"access_token": "mock-token", "expires_in": 1799})
+            return
+        wanted = set(json.loads(raw).get("composite_ids", []))
+        self._json(200, {"resources": [a for a in TELEMETRY.falcon_alerts
+                                       if a["composite_id"] in wanted]})
+
+
+def start(handler, port):
+    srv = ThreadingHTTPServer(("127.0.0.1", port), handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+# ----------------------------------------------------------------------------
+# The ants, wired together
+# ----------------------------------------------------------------------------
+class Ants:
+    def __init__(self, scope=None):
+        now = datetime.now(timezone.utc)
+        self.planner = Planner()
+        self.scope = scope or {
+            "allowed_hosts": [HOST1["name"], HOST2["name"]],
+            "allowed_targets": [HOST1["target_ip"]],
+            "allowed_actions": list(self.planner.actions),
+            "not_before": (now - timedelta(hours=1)).isoformat(),
+            "not_after": (now + timedelta(hours=2)).isoformat(),
+            "max_steps": 20,
+        }
+        self.gatekeeper = Gatekeeper(self.scope, self.planner.actions, os.urandom(32),
+                                     WORK / "audit.jsonl", WORK / "KILL_SWITCH")
+        self.defences = {k: dict(v) for k, v in DEFENCES.items()}
+        self.agent = SimulatedAgent(self.gatekeeper, TELEMETRY, self.defences)
+        self.splunk = SplunkObserver({
+            "OPENAEV_URL": "http://127.0.0.1:9", "OPENAEV_TOKEN": "unused-in-sandbox",
+            "COLLECTOR_ID": "splunkes--0b13e3f7-5c9e-46f5-acc4-33032e9b4921",
+            "COLLECTOR_NAME": "SplunkES", "COLLECTOR_PERIOD": "PT1M",
+            "SPLUNKES_BASE_URL": f"http://127.0.0.1:{SPLUNK_PORT}",
+            "SPLUNKES_USERNAME": "svc_mock", "SPLUNKES_PASSWORD": "mock-only",
+            "SPLUNKES_ALERTS_INDEX": "main", "SPLUNKES_MAX_RETRY": "0",
+            "SPLUNKES_OFFSET": "PT1S", "SPLUNKES_VERIFY_SSL": "false",
+            "SPLUNKES_MEMORY_PATH": str(WORK / "location_memory.json"),
+        })
+        self.falcon = FalconObserver(FalconHttpClient(
+            f"http://127.0.0.1:{FALCON_PORT}", "mock-client-id", "mock-only"))
+        self.rulebook = RuleBook(WORK / "rulebook.json")
+        self.matcher = Matcher(self.rulebook)
+        self.reporter = Reporter(WORK / "history.json")
+        self.analyst = SearchAnalyst(WORK / "search_changes.jsonl")
+        self.runs = 0
+
+    def run(self, tests, hosts, before_step=None, label=None):
+        if self.runs:
+            age_telemetry()          # the next run happens "an hour later"
+        self.runs += 1
+        before = dict(self.splunk.searches)
+        print(f" RUN {self.runs}" + (f": {label}" if label else ""))
+        event("run_start", n=self.runs, label=label or f"Run {self.runs}")
+        report = run_validation(
+            planner=self.planner, gatekeeper=self.gatekeeper, agent=self.agent,
+            observers=[self.splunk, self.falcon], matcher=self.matcher,
+            reporter=self.reporter, test_ids=tests, hosts=hosts,
+            approver="purple.lead", analyst=self.analyst, emit=emit,
+            before_step=before_step)
+        report["splunk_searches"] = {k: self.splunk.searches[k] - before[k]
+                                     for k in before}
+        event("run_end", n=self.runs, report=report,
+              audit=self.gatekeeper.read_audit()[-12:])
+        for step in report["steps"]:
+            print(f"   => {step['test_id']} on {step['host']}: {step['outcome']}"
+                  + (f" ({step['reason']})" if step["reason"] else "")
+                  + "".join(f"\n        ! {f}" for f in step["findings"]))
+        for item in report["not_run"]:
+            print(f"   => {item['test_id']} on {item['host']}: Not run ({item['reason']})")
+        return report
+
+
+def age_telemetry(hours=1):
+    """Move everything recorded so far one hour into the past."""
+    shift = timedelta(hours=hours)
+    for row in TELEMETRY.splunk_rows:
+        row["_time"] = (datetime.strptime(row["_time"], FMT) - shift).strftime(FMT)
+    for alert in TELEMETRY.falcon_alerts:
+        for key in ("created_timestamp", "updated_timestamp"):
+            moved = datetime.strptime(alert[key].rstrip("Z"), FMT) - shift
+            alert[key] = moved.strftime(FMT) + "Z"
+
+
+def outcome_of(report, test_id, host=HOST1["name"]):
+    return next((s for s in report["steps"]
+                 if s["test_id"] == test_id and s["host"] == host), None)
+
+
+def want(fails, report, test_id, outcome, host=HOST1["name"], finding=None, sightings=None):
+    step = outcome_of(report, test_id, host)
+    if step is None:
+        fails.append(f"{test_id} on {host}: no verdict")
+        return
+    if step["outcome"] != outcome:
+        fails.append(f"{test_id} on {host}: {step['outcome']!r}, expected {outcome!r}")
+    if finding and not any(finding in f for f in step["findings"]):
+        fails.append(f"{test_id}: no finding containing {finding!r} in {step['findings']}")
+    if sightings is not None and step["sightings"] != sightings:
+        fails.append(f"{test_id}: counted {step['sightings']} detection(s), expected {sightings}")
+
+
+def want_not_run(fails, report, reason, count):
+    got = [i for i in report["not_run"] if i["reason"] == reason]
+    if len(got) != count:
+        fails.append(f"{len(got)} step(s) refused for {reason!r}, expected {count}: "
+                     f"{[(i['test_id'], i['reason']) for i in report['not_run']]}")
+
+
+# ----------------------------------------------------------------------------
+# Scenarios
+# ----------------------------------------------------------------------------
+def s_full_run():
+    """All ants, four tests on one host: detected, prevented, detected, missed."""
+    ants, fails = Ants(), []
+    r = ants.run(ALL_TESTS, [HOST1])
+    want(fails, r, "T-EXEC-001", DETECTED, sightings=1)     # Falcon + forwarded copy = 1
+    want(fails, r, "T-FILE-002", PREVENTED, sightings=1)
+    want(fails, r, "T-DNS-003", DETECTED, sightings=1)
+    want(fails, r, "T-NET-004", MISSED)
+    if r["detection_rate"] != 0.75:
+        fails.append(f"detection rate {r['detection_rate']}, expected 0.75")
+    if r["splunk_searches"]["wide"] != 1 or r["splunk_searches"]["narrow"] != 0:
+        fails.append(f"Splunk searches {r['splunk_searches']}, expected one wide search")
+    if not r["audit_intact"]:
+        fails.append("audit log chain is broken")
+    return fails, (f"4 steps: 2 Detected, 1 Prevented, 1 Missed; rate 75%; "
+                   f"{r['splunk_searches']['wide']} Splunk search for all four")
+
+
+def s_repeat_run():
+    """The repeat run uses the location memory, keyed by the real test id."""
+    ants, fails = Ants(), []
+    ants.run(ALL_TESTS, [HOST1], label="first run")
+    r = ants.run(ALL_TESTS, [HOST1], label="repeat run")
+    want(fails, r, "T-EXEC-001", DETECTED)
+    want(fails, r, "T-FILE-002", PREVENTED)
+    want(fails, r, "T-DNS-003", DETECTED)
+    want(fails, r, "T-NET-004", MISSED)
+    if r["splunk_searches"] != {"narrow": 1, "wide": 1, "candidates": 0}:
+        fails.append(f"repeat-run Splunk searches {r['splunk_searches']}, expected 1 narrow "
+                     f"(three remembered tests) + 1 wide (the one never found)")
+    if r["drift"]:
+        fails.append(f"unexpected drift: {r['drift']}")
+    changes = sorted(c["change"] for c in r["search_changes"])
+    if changes != ["confirmed", "confirmed", "confirmed", "none"]:
+        fails.append(f"repeat-run search changes {changes}")
+    return fails, "repeat run: 1 narrow search for the 3 remembered tests, 1 wide for the other"
+
+
+def s_search_changes():
+    """Every change to how a test is searched is written down with the reason."""
+    ants, fails = Ants(), []
+    test = "T-DNS-003"
+
+    def kinds(report):
+        return [c["change"] for c in report["search_changes"]]
+
+    r1 = ants.run([test], [HOST1], label="first run: found by the wide search")
+    r2 = ants.run([test], [HOST1], label="repeat run: found in the remembered place")
+    ants.defences[test]["splunk_rule"] = dict(DNS_RULE, sourcetype="XmlWinEventLog:Sysmon")
+    r3 = ants.run([test], [HOST1], label="the logs moved to another sourcetype")
+    ants.defences[test] = {}
+    r4 = ants.run([test], [HOST1], label="the detection stopped working")
+    got = [kinds(r) for r in (r1, r2, r3, r4)]
+    if got != [["learned"], ["confirmed"], ["added"], ["dropped"]]:
+        fails.append(f"changes {got}, expected learned, confirmed, added, dropped")
+    first = (r1["search_changes"] or [{}])[0]
+    evidence = first.get("evidence", {})
+    if (evidence.get("sourcetype") != "stream:dns" or evidence.get("field") != "query"
+            or "stream:dns" not in first.get("search_next", "")):
+        fails.append(f"first entry does not say where the evidence was: {first}")
+    if "Sysmon" not in (r3["search_changes"] or [{}])[0].get("search_next", ""):
+        fails.append("the moved location is not in the next search")
+    if not (r4["search_changes"] or [{}])[0].get("search_next", "").startswith("wide"):
+        fails.append("after a confirmed miss the next search is not the wide one")
+    log = ants.analyst.read_log()
+    if len(log) != 4 or ants.analyst.verify_log() != (True, None):
+        fails.append(f"change log has {len(log)} entries or does not verify")
+    path = ants.analyst.log_path
+    lines = path.read_text(encoding="utf-8").splitlines()
+    edited = json.loads(lines[0])
+    edited["why"] = "edited afterwards"
+    path.write_text(chr(10).join([json.dumps(edited)] + lines[1:]) + chr(10), encoding="utf-8")
+    if ants.analyst.verify_log()[0]:
+        fails.append("an edited change-log entry was not detected")
+    return fails, ("learned -> confirmed -> added -> dropped, each with its reason; "
+                   "edits to the log are detected")
+
+
+def s_gate_hardening():
+    """Review fixes: injection through an address, look-alike hosts, restart replay, limits."""
+    ants, fails = Ants(), []
+    g = ants.gatekeeper
+
+    def refused(label, step, reason):
+        try:
+            g.authorise(step)
+            fails.append(f"NOT refused: {label}")
+        except Refused as e:
+            if e.reason != reason:
+                fails.append(f"{label}: refused for {e.reason!r}, expected {reason!r}")
+
+    def signed_step(test="T-EXEC-001", host=HOST1):
+        plan = ants.planner.plan([test], [host])
+        g.sign_plan(plan, "purple.lead")
+        return plan.steps[0]
+
+    # 1. An address that is not an address cannot smuggle a second command.
+    try:
+        ants.planner.plan(["T-NET-004"], [dict(HOST1, target_ip="10.0.0.9:445 & whoami & rem ")])
+        fails.append("planner accepted a target address with a command in it")
+    except ValueError:
+        pass
+    step = signed_step("T-NET-004")
+    step.target_ip = "10.0.0.9:445 & whoami & rem "
+    step.command = "tcp-connect " + step.target_ip + ":445"
+    refused("command injected through the target address", step, "bad_address")
+    step = signed_step()
+    step.id = "x & net user"
+    refused("step id that is not a UUID", step, "bad_step_id")
+    step = signed_step("T-NET-004")
+    step.target_ip = "10.9.9.9"
+    step.command = "tcp-connect 10.9.9.9:445"
+    refused("target address that is not on the scope list", step, "out_of_scope")
+
+    # 2. Look-alike host names are not the host on the list.
+    for name in ("ws-test-01.prod.corp.example", "WS-TEST-01.evil.example", "10.0.0.5"):
+        step = signed_step()
+        step.host = name
+        refused(f"host {name}", step, "out_of_scope")
+
+    # 3. Replay after a restart, and from a second gatekeeper on the same files.
+    step = signed_step()
+    g.authorise(step)
+    restarted = Gatekeeper(ants.scope, ants.planner.actions, g._key, g.audit_path,
+                           g.kill_switch_path)
+    for label, keeper in (("restarted gatekeeper", restarted), ("same gatekeeper", g)):
+        try:
+            keeper.authorise(step)
+            fails.append(f"replay allowed by the {label}")
+        except Refused as e:
+            if e.reason != "replay":
+                fails.append(f"{label}: {e.reason!r}, expected 'replay'")
+
+    # 4. The step limit holds across several signing calls for one run.
+    g.max_steps = 2
+    plan = ants.planner.plan(ALL_TESTS, [HOST1])
+    for one in plan.steps:                          # sign one step at a time
+        g.sign_plan(type(plan)(plan.run_id, plan.created, [one]), "purple.lead")
+    ran = 0
+    for one in plan.steps:
+        try:
+            g.authorise(one)
+            ran += 1
+        except Refused as e:
+            if e.reason != "too_many_steps":
+                fails.append(f"over-limit step refused for {e.reason!r}")
+    if ran != 2:
+        fails.append(f"{ran} steps authorised with a limit of 2")
+    g.max_steps = 20
+
+    # 5. A signature made for one window is void under another.
+    step = signed_step()
+    later = dict(ants.scope, not_after=(datetime.now(timezone.utc) + timedelta(days=3)).isoformat())
+    other = Gatekeeper(later, ants.planner.actions, g._key, g.audit_path, g.kill_switch_path)
+    try:
+        other.authorise(step)
+        fails.append("a step signed for one window ran under another window")
+    except Refused as e:
+        if e.reason != "bad_signature":
+            fails.append(f"other window: {e.reason!r}, expected 'bad_signature'")
+
+    # 6. Every refusal above is in the audit log, with the command.
+    log = g.read_audit()
+    refusals = [e for e in log if e["event"] == "refused"]
+    if len(refusals) < 9 or not all("command" in e for e in refusals):
+        fails.append(f"{len(refusals)} refusals in the audit log, or the command is missing")
+    if g.verify_audit() != (True, None):
+        fails.append("audit log does not verify after the refusals")
+    emit("Gatekeeper", f"{len(refusals)} attempts refused and logged: injected command, bad id, "
+                       f"look-alike hosts, replay after restart, step limit, other window",
+         status="stop", data=[{"test": e.get("test_id"), "host": e.get("host"), "why": e.get("detail")}
+                              for e in refusals])
+    return fails, (f"{len(refusals)} bypass attempts refused and logged: injection, look-alike "
+                   f"hosts, replay after restart, step limit, signature under another window")
+
+
+def s_matcher_hardening():
+    """Review fixes: a learned rule cannot claim another step's alert; unasked sources; drift."""
+    ants, fails = Ants(), []
+    test, rule = "T-DNS-003", DNS_RULE["rule_name"]
+    # One person confirming twice counts once.
+    ants.rulebook.confirm(test, "splunk", rule, "purple.analyst.1")
+    ants.rulebook.confirm(test, "splunk", rule, "purple.analyst.1")
+    if ants.rulebook.trusted(test, "splunk"):
+        fails.append("the same person confirming twice made the rule trusted")
+    ants.rulebook.confirm(test, "splunk", rule, "purple.analyst.2")
+
+    # Two steps of the same test in one run; only the first has an alert (with ITS marker).
+    # The second must not be "detected" by the first one's alert through the learned rule.
+    r1 = ants.run([test], [HOST1], label="one alert, carrying its own marker")
+    want(fails, r1, test, DETECTED)
+    ants.defences[test] = {}
+    ants.runs = 0                                   # do not age: the old alert is still in the window
+    r2 = ants.run([test], [HOST1], label="next run right after, detection removed")
+    ants.runs = 2
+    want(fails, r2, test, MISSED)                   # not Detected through run 1's alert
+    if [d["kind"] for d in r2["regressions"]] != ["regression"]:
+        fails.append(f"the regression was hidden: {r2['drift']}")
+
+    # A source that was expected but never asked is Could not check, not Missed.
+    plan = ants.planner.plan(["T-EXEC-001"], [HOST1])
+    ants.gatekeeper.sign_plan(plan, "purple.lead")
+    ants.defences["T-EXEC-001"] = {}                # nothing would be seen anyway
+    ants.agent.run(plan.steps[0])
+    verdict = ants.matcher.fuse(plan.steps, ants.splunk.observe(plan.steps, set()),
+                                {"splunk": ants.splunk.candidates})[0]
+    if verdict.outcome != COULD_NOT_CHECK or verdict.reason != "no_observer":
+        fails.append(f"Falcon never asked -> {verdict.outcome} ({verdict.reason})")
+
+    # Prevented baseline, then Falcon down: Detected via Splunk must not be a regression.
+    ants2 = ants
+    ants2.defences["T-FILE-002"] = dict(DEFENCES["T-FILE-002"])
+    b1 = ants2.run(["T-FILE-002"], [HOST1], label="baseline: prevented")
+    want(fails, b1, "T-FILE-002", PREVENTED)
+    MOCK["falcon_mode"] = "error"
+    b2 = ants2.run(["T-FILE-002"], [HOST1], label="Falcon cannot be checked")
+    MOCK["falcon_mode"] = "ok"
+    want(fails, b2, "T-FILE-002", DETECTED, finding="partly checked")
+    if b2["regressions"] or [d["kind"] for d in b2["drift"]] != ["unknown"]:
+        fails.append(f"partly checked run reported as a regression: {b2['drift']}")
+    b3 = ants2.run(["T-FILE-002"], [HOST1], label="Falcon back")
+    want(fails, b3, "T-FILE-002", PREVENTED)
+    if b3["drift"]:
+        fails.append(f"history was overwritten by the partly checked run: {b3['drift']}")
+
+    # An address-only match is flagged, never silently trusted.
+    ants.defences["T-NET-004"] = {"splunk_rule": {"sourcetype": "pan:traffic",
+                                                  "rule_name": "SMB to server", "ips": True}}
+    n1 = ants.run(["T-NET-004"], [HOST1], label="network step matched on addresses only")
+    want(fails, n1, "T-NET-004", DETECTED, finding="weak match")
+    return fails, ("learned rule cannot claim another step's alert; unasked source is Could not "
+                   "check; a partly checked run is not a regression; address-only match flagged")
+
+
+def s_gate_out_of_scope():
+    """A host that is not on the scope list is never touched."""
+    ants, fails = Ants(), []
+    r = ants.run(["T-EXEC-001", "T-DNS-003"], [HOST1, OUTSIDER])
+    want(fails, r, "T-EXEC-001", DETECTED)
+    want(fails, r, "T-DNS-003", DETECTED)
+    want_not_run(fails, r, "out_of_scope", 2)
+    if any("ws-prod-77" in json.dumps(x).lower()
+           for x in TELEMETRY.splunk_rows + TELEMETRY.falcon_alerts):
+        fails.append("telemetry exists for the out-of-scope host: a step ran there")
+    return fails, "2 steps on the out-of-scope host refused; nothing ran there"
+
+
+def s_gate_tampered():
+    """A step changed after signing is refused."""
+    ants, fails = Ants(), []
+
+    def tamper(index, step):
+        if index == 0:
+            step.host = HOST2["name"]                       # in scope, but not what was signed
+        if index == 1:
+            step.command = step.command + " & whoami"       # not the allow-listed command
+
+    r = ants.run(["T-EXEC-001", "T-FILE-002", "T-DNS-003"], [HOST1], before_step=tamper)
+    want_not_run(fails, r, "bad_signature", 1)
+    want_not_run(fails, r, "command_not_allowed", 1)
+    want(fails, r, "T-DNS-003", DETECTED)
+    return fails, "changed host -> bad signature; changed command -> not allow-listed"
+
+
+def s_gate_kill_switch():
+    """Once the kill switch is engaged, no further step runs."""
+    ants, fails = Ants(), []
+
+    def pull(index, step):
+        if index == 2:
+            ants.gatekeeper.engage_kill_switch("soc.oncall", "stop requested")
+
+    r = ants.run(ALL_TESTS, [HOST1], before_step=pull)
+    want(fails, r, "T-EXEC-001", DETECTED)
+    want(fails, r, "T-FILE-002", PREVENTED)
+    want_not_run(fails, r, "kill_switch", 2)
+    events = [e["event"] for e in ants.gatekeeper.read_audit()]
+    if "kill_switch_engaged" not in events:
+        fails.append("kill switch not in the audit log")
+    return fails, "2 steps ran, kill switch engaged, the remaining 2 refused"
+
+
+def s_gate_outside_window():
+    """Outside the approved time window nothing runs."""
+    now = datetime.now(timezone.utc)
+    ants, fails = Ants(scope={
+        "allowed_hosts": [HOST1["name"]], "allowed_targets": [HOST1["target_ip"]],
+        "allowed_actions": ["echo_marker", "drop_marker_file", "dns_lookup_marker", "tcp_probe"],
+        "not_before": (now - timedelta(days=2)).isoformat(),
+        "not_after": (now - timedelta(days=1)).isoformat(), "max_steps": 20}), []
+    r = ants.run(["T-EXEC-001", "T-DNS-003"], [HOST1])
+    want_not_run(fails, r, "outside_window", 2)
+    if r["steps"] or r["detection_rate"] is not None or TELEMETRY.splunk_rows:
+        fails.append("something ran or was scored outside the window")
+    return fails, "window ended yesterday: both steps refused, nothing scored"
+
+
+def s_gate_replay_and_limit():
+    """A signed step is authorised once; a run cannot exceed its step limit."""
+    ants, fails = Ants(), []
+    plan = ants.planner.plan(["T-EXEC-001"], [HOST1])
+    ants.gatekeeper.sign_plan(plan, "purple.lead")
+    ants.agent.run(plan.steps[0])
+    try:
+        ants.agent.run(plan.steps[0])
+        fails.append("the same signed step ran twice")
+    except Refused as e:
+        if e.reason != "replay":
+            fails.append(f"second run refused for {e.reason!r}, expected 'replay'")
+    unsigned = Planner().plan(["T-EXEC-001"], [HOST1]).steps[0]
+    try:
+        ants.agent.run(unsigned)
+        fails.append("an unsigned step ran")
+    except Refused as e:
+        if e.reason != "not_signed":
+            fails.append(f"unsigned step refused for {e.reason!r}")
+    ants.gatekeeper.max_steps = 2
+    big = ants.planner.plan(ALL_TESTS, [HOST1])
+    over = ants.gatekeeper.sign_plan(big, "purple.lead")
+    if [e.reason for _, e in over] != ["too_many_steps", "too_many_steps"]:
+        fails.append(f"step limit not enforced: {[e.reason for _, e in over]}")
+    emit("Gatekeeper", "Replay refused, unsigned step refused, step limit enforced")
+    return fails, "replay refused; unsigned step refused; step limit of 2 enforced"
+
+
+def s_audit_tamper():
+    """An edited or removed audit entry is detected."""
+    ants, fails = Ants(), []
+    ants.run(["T-EXEC-001", "T-DNS-003"], [HOST1])
+    path = ants.gatekeeper.audit_path
+    original = path.read_text(encoding="utf-8")
+    if ants.gatekeeper.verify_audit() != (True, None):
+        fails.append("untouched audit log does not verify")
+    lines = original.splitlines()
+    edited = json.loads(lines[1])
+    edited["host"] = "WS-SOMETHING-ELSE"
+    path.write_text("\n".join([lines[0], json.dumps(edited)] + lines[2:]) + "\n", encoding="utf-8")
+    ok, seq = ants.gatekeeper.verify_audit()
+    if ok or seq != 2:
+        fails.append(f"edited entry not detected (ok={ok}, seq={seq})")
+    path.write_text("\n".join(lines[:2] + lines[3:]) + "\n", encoding="utf-8")
+    ok, seq = ants.gatekeeper.verify_audit()
+    if ok:
+        fails.append("removed entry not detected")
+    path.write_text("\n".join(lines[:-2]) + "\n", encoding="utf-8")       # cut off the end
+    if ants.gatekeeper.verify_audit()[0]:
+        fails.append("cut-off tail not detected")
+    import hashlib
+    prev, rewritten = "0" * 64, []
+    for line in lines:                                  # rewrite everything, re-hash without the key
+        entry = json.loads(line)
+        entry["host"], entry["prev"] = "WS-REWRITTEN", prev
+        body = {k: v for k, v in entry.items() if k != "hash"}
+        entry["hash"] = hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
+        prev = entry["hash"]
+        rewritten.append(json.dumps(entry))
+    path.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
+    if ants.gatekeeper.verify_audit()[0]:
+        fails.append("a fully rewritten, re-hashed log was not detected")
+    plan = ants.planner.plan(["T-EXEC-001"], [HOST1])
+    try:
+        ants.gatekeeper.sign_plan(plan, "purple.lead")
+        ants.agent.run(plan.steps[0])
+        fails.append("a step ran while the audit log did not verify")
+    except Refused as e:
+        if e.reason not in ("audit_broken", "not_signed"):
+            fails.append(f"broken log: refused for {e.reason!r}")
+    path.write_text(original, encoding="utf-8")
+    if ants.gatekeeper.verify_audit() != (True, None):
+        fails.append("restored audit log does not verify")
+    emit("Gatekeeper", f"Audit log: {len(lines)} entries; an edit, a removal, a cut-off end and "
+                       f"a re-hashed rewrite are all detected, and nothing runs while it is broken")
+    return fails, (f"{len(lines)} audit entries; edit, removal, cut-off end and re-hashed rewrite "
+                   f"all detected; no step runs while the log is broken")
+
+
+def _falcon_broken(mode, reason):
+    ants, fails = Ants(), []
+    ants.defences["T-EXEC-001"]["forward"] = False      # so only Falcon could have seen it
+    MOCK["falcon_mode"] = mode
+    r = ants.run(["T-EXEC-001", "T-FILE-002"], [HOST1])
+    want(fails, r, "T-EXEC-001", COULD_NOT_CHECK)       # not Missed
+    step = outcome_of(r, "T-EXEC-001")
+    if step and step["reason"] != reason:
+        fails.append(f"reason {step['reason']!r}, expected {reason!r}")
+    want(fails, r, "T-FILE-002", DETECTED, finding="partly checked")
+    if r["detection_rate"] != 1.0 or r["scored_steps"] != 1:
+        fails.append(f"rate {r['detection_rate']} over {r['scored_steps']}: the unchecked "
+                     f"step must be left out of the rate")
+    return fails, (f"Falcon {reason}: the Falcon-only step is Could not check, the other is "
+                   f"Detected from Splunk and flagged partly checked")
+
+
+def s_falcon_down():
+    """Falcon API answers with an error: Could not check, never Missed."""
+    return _falcon_broken("error", "search_failed")
+
+
+def s_falcon_auth():
+    """Falcon rejects the sign-in."""
+    return _falcon_broken("auth", "auth_failed")
+
+
+def s_falcon_unreachable():
+    """The connection to Falcon drops."""
+    return _falcon_broken("drop", "source_unreachable")
+
+
+def s_pipeline_gap():
+    """Falcon sees it, the forwarded copy never reaches Splunk: a finding of its own."""
+    ants, fails = Ants(), []
+    ants.defences["T-EXEC-001"]["forward"] = False
+    r = ants.run(["T-EXEC-001"], [HOST1])
+    want(fails, r, "T-EXEC-001", DETECTED, finding="log pipeline gap", sightings=1)
+    return fails, "Detected by Falcon, missing in Splunk -> log pipeline gap reported"
+
+
+def s_prevention_gap():
+    """A step that should be blocked is only detected."""
+    ants, fails = Ants(), []
+    ants.defences["T-FILE-002"]["falcon"] = "detect"
+    r = ants.run(["T-FILE-002"], [HOST1])
+    want(fails, r, "T-FILE-002", DETECTED, finding="prevention gap")
+    return fails, "expected Prevented, got Detected -> prevention gap reported"
+
+
+def s_learned_rule():
+    """A rule confirmed twice by purple team matches an alert that has no marker."""
+    ants, fails = Ants(), []
+    test, rule = "T-DNS-003", DNS_RULE["rule_name"]
+    r1 = ants.run([test], [HOST1], label="marker match, confirmed by purple team")
+    want(fails, r1, test, DETECTED)
+    ants.rulebook.confirm(test, "splunk", rule, "purple.analyst.1")
+    if ants.rulebook.trusted(test, "splunk"):
+        fails.append("rule trusted after a single confirmation")
+    r2 = ants.run([test], [HOST1], label="marker match, confirmed again")
+    want(fails, r2, test, DETECTED)
+    ants.rulebook.confirm(test, "splunk", rule, "purple.analyst.2")
+    emit("Matcher", f"Purple team confirmed rule '{rule}' twice: it is now trusted for {test}")
+
+    ants.defences[test]["marker_in_alert"] = False       # the alert no longer carries the marker
+    r3 = ants.run([test], [HOST1], label="alert without the marker")
+    want(fails, r3, test, DETECTED, finding="needs confirmation")
+    obs = (outcome_of(r3, test) or {}).get("observations", [{}])[0]
+    if obs.get("method") != "learned_rule":
+        fails.append(f"run 3 method {obs.get('method')!r}, expected 'learned_rule'")
+
+    ants.defences[test]["noise_before"] = True           # the rule also fires when nothing runs
+    r4 = ants.run([test], [HOST1], label="same rule also fires in the quiet window")
+    want(fails, r4, test, MISSED, finding="learned rule not used")
+    return fails, ("confirmed twice -> trusted; unmarked alert matched by the learned rule and "
+                   "flagged; not used when the rule also fires in the quiet window")
+
+
+def s_drift():
+    """Detected last run, missed now is a regression. Could not check is not."""
+    ants, fails = Ants(), []
+    r1 = ants.run(["T-EXEC-001"], [HOST1], label="baseline")
+    want(fails, r1, "T-EXEC-001", DETECTED)
+    ants.defences["T-EXEC-001"] = {}                      # the detection stops working
+    r2 = ants.run(["T-EXEC-001"], [HOST1], label="detection broken")
+    want(fails, r2, "T-EXEC-001", MISSED)
+    if [d["kind"] for d in r2["regressions"]] != ["regression"]:
+        fails.append(f"regression not reported: {r2['drift']}")
+    ants.defences["T-EXEC-001"] = {"falcon": "detect", "forward": False}
+    MOCK["falcon_mode"] = "error"
+    r3 = ants.run(["T-EXEC-001"], [HOST1], label="Falcon cannot be checked")
+    want(fails, r3, "T-EXEC-001", COULD_NOT_CHECK)
+    if r3["regressions"] or [d["kind"] for d in r3["drift"]] != ["unknown"]:
+        fails.append(f"an unchecked step was reported as drift: {r3['drift']}")
+    return fails, "Detected -> Missed reported as a regression; Could not check is 'unknown', not a regression"
+
+
+SCENARIOS = {
+    "full_run": ("All ants, one run", s_full_run),
+    "repeat_run": ("Repeat run uses the memory", s_repeat_run),
+    "search_changes": ("Analyst: search changes and why", s_search_changes),
+    "gate_out_of_scope": ("Gatekeeper: host not in scope", s_gate_out_of_scope),
+    "gate_hardening": ("Gatekeeper: bypass attempts", s_gate_hardening),
+    "matcher_hardening": ("Matcher: no borrowed alerts, no false regressions", s_matcher_hardening),
+    "gate_tampered": ("Gatekeeper: step changed after signing", s_gate_tampered),
+    "gate_kill_switch": ("Gatekeeper: kill switch", s_gate_kill_switch),
+    "gate_outside_window": ("Gatekeeper: outside the time window", s_gate_outside_window),
+    "gate_replay_and_limit": ("Gatekeeper: replay, unsigned step, step limit", s_gate_replay_and_limit),
+    "audit_tamper": ("Gatekeeper: audit log tampering", s_audit_tamper),
+    "falcon_down": ("Falcon observer: API error", s_falcon_down),
+    "falcon_auth": ("Falcon observer: sign-in rejected", s_falcon_auth),
+    "falcon_unreachable": ("Falcon observer: connection drops", s_falcon_unreachable),
+    "pipeline_gap": ("Matcher: in Falcon, not in Splunk", s_pipeline_gap),
+    "prevention_gap": ("Matcher: detected but not blocked", s_prevention_gap),
+    "learned_rule": ("Matcher: learned rule and quiet window", s_learned_rule),
+    "drift": ("Reporter: regression between runs", s_drift),
+}
+
+
+def run_all():
+    print(f"{'scenario':<24} {'result':<6} detail")
+    print("-" * 110)
+    failed = []
+    for name in SCENARIOS:
+        proc = subprocess.run([sys.executable, __file__, name],
+                              capture_output=True, text=True, timeout=240)
+        line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("SANDBOX ")), "")
+        ok = proc.returncode == 0 and line.startswith("SANDBOX PASS")
+        detail = line.split(" ", 2)[2] if line.count(" ") >= 2 else proc.stderr.strip()[-400:]
+        print(f"{name:<24} {'PASS' if ok else 'FAIL':<6} {detail}")
+        if not ok:
+            failed.append(name)
+    print("-" * 110)
+    print(f"{len(SCENARIOS) - len(failed)}/{len(SCENARIOS)} scenarios passed")
+    return 1 if failed else 0
+
+
+def main():
+    if SCENARIO == "all":
+        sys.exit(run_all())
+    if SCENARIO == "catalogue":
+        print(json.dumps([{"id": k, "title": v[0], "blurb": (v[1].__doc__ or "").strip()}
+                          for k, v in SCENARIOS.items()]))
+        sys.exit(0)
+    if SCENARIO not in SCENARIOS:
+        print(f"unknown scenario {SCENARIO!r}; choose one of: all, {', '.join(SCENARIOS)}")
+        sys.exit(2)
+    logging.basicConfig(level=logging.CRITICAL)
+    splunk, falcon = start(SplunkMock, SPLUNK_PORT), start(FalconMock, FALCON_PORT)
+    print("=" * 78 + f"\n SCENARIO: {SCENARIO} - {SCENARIOS[SCENARIO][0]}\n" + "=" * 78)
+    fails, note = SCENARIOS[SCENARIO][1]()
+    print("=" * 78)
+    print(("SANDBOX FAIL " + note + " :: " + "; ".join(fails)) if fails else "SANDBOX PASS " + note)
+    event("harness", ok=not fails, note=note, fails=fails)
+    path = os.environ.get("HARNESS_EVENTS_FILE")
+    if path:
+        Path(path).write_text(json.dumps(EVENTS, default=str), encoding="utf-8")
+    splunk.shutdown()
+    falcon.shutdown()
+    sys.exit(1 if fails else 0)
+
+
+if __name__ == "__main__":
+    main()

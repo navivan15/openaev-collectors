@@ -23,6 +23,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 HARNESS = HERE / "mock_e2e_harness.py"
 PAGE = HERE / "demo" / "index.html"
+ANTS_SANDBOX = HERE.parents[1] / "validation-ants" / "sandbox.py"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8140
 
 RUN_LOCK = threading.Lock()   # the harness uses fixed mock ports: one run at a time
@@ -30,13 +31,22 @@ LAST = {}                     # scenario id -> summary of its last run in this s
 
 
 def load_catalogue():
+    """Collector scenarios, plus the full-pipeline scenarios when they are present."""
     out = subprocess.run([sys.executable, str(HARNESS), "catalogue"],
                          capture_output=True, text=True, timeout=60)
-    return json.loads(out.stdout)
+    groups = json.loads(out.stdout)
+    scripts = {test["id"]: HARNESS for group in groups for test in group["tests"]}
+    if ANTS_SANDBOX.exists():
+        out = subprocess.run([sys.executable, str(ANTS_SANDBOX), "catalogue"],
+                             capture_output=True, text=True, timeout=60)
+        tests = json.loads(out.stdout)
+        groups.insert(0, {"group": "All ants: full pipeline", "tests": tests})
+        scripts.update({test["id"]: ANTS_SANDBOX for test in tests})
+    return groups, scripts
 
 
-CATALOGUE = load_catalogue()
-KNOWN = {test["id"] for group in CATALOGUE for test in group["tests"]}
+CATALOGUE, SCRIPTS = load_catalogue()
+KNOWN = set(SCRIPTS)
 
 
 def run_scenario(scenario):
@@ -47,7 +57,7 @@ def run_scenario(scenario):
     started = time.time()
     try:
         with RUN_LOCK:
-            proc = subprocess.run([sys.executable, str(HARNESS), scenario],
+            proc = subprocess.run([sys.executable, str(SCRIPTS[scenario]), scenario],
                                   capture_output=True, text=True, timeout=240, env=env,
                                   encoding="utf-8", errors="replace")
         try:
@@ -61,6 +71,7 @@ def run_scenario(scenario):
             pass
     verdict = next((e for e in events if e.get("type") == "harness"), None)
     cycles = [e for e in events if e.get("type") == "cycle_end"]
+    pipeline_runs = [e for e in events if e.get("type") == "run_end"]
     result = {
         "id": scenario,
         "ok": proc.returncode == 0 and bool(verdict and verdict.get("ok")),
@@ -73,6 +84,7 @@ def run_scenario(scenario):
     LAST[scenario] = {
         "ok": result["ok"],
         "outcomes": [r["outcome"] for c in cycles for r in c.get("results", [])],
+        "pipeline": bool(pipeline_runs) or any(e.get("type") == "ant" for e in events),
         "searches": [len(c.get("searches", [])) for c in cycles],
         "at": time.strftime("%H:%M:%S"),
     }

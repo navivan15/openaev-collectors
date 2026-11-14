@@ -22,6 +22,17 @@
         "on": "2026-11-14",
         "sample_rows": 0
       }
+    },
+    {
+      "id": "host_window_search",
+      "purpose": "candidates",
+      "description": "Every alert naming one of the given hosts in a time range. Used to compare a step's window with a quiet window when an alert carries no step marker.",
+      "spl": "index={index} {sourcetype_filter} ({host_filter}) earliest={earliest} latest={latest} | table {fields} | sort 0 -_time | head {limit}",
+      "proven": {
+        "against": "mock_e2e_harness",
+        "on": "2026-11-14",
+        "sample_rows": 0
+      }
     }
   ]
 }

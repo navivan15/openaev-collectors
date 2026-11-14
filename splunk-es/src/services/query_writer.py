@@ -39,6 +39,7 @@ TEMPLATE_PLACEHOLDERS = {
     "sourcetype_filter",
     "step_filter",
     "location_filter",
+    "host_filter",
     "earliest",
     "latest",
     "fields",
@@ -49,6 +50,7 @@ _INDEX_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_\-.]*\*?$")
 _SOURCETYPE_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_\-.:/]*\*?$|^\*$")
 _FIELD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.\-:]*$")
 _MARKER_RE = re.compile(r"^[0-9a-f\-]{32,36}$")
+_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-.]{0,252}$")
 
 SRC_IP_FIELDS = ("src_ip", "src", "source_ip", "client_ip")
 DST_IP_FIELDS = ("dst_ip", "dest", "dest_ip", "destination_ip", "server_ip")
@@ -290,6 +292,7 @@ SAMPLE_VALUES: dict[str, Any] = {
     "step_filter": '("00000000-0000-0000-0000-000000000000")',
     "location_filter": 'index=main sourcetype="sample:sourcetype" '
     '("00000000-0000-0000-0000-000000000000")',
+    "host_filter": 'dest_host IN ("sample-host*")',
     "earliest": 1700000000,
     "latest": 1700000600,
     "fields": table_fields(),
@@ -342,6 +345,37 @@ class QueryWriter:
             index=self.index,
             sourcetype_filter=self._sourcetype_filter(),
             step_filter=" OR ".join(clauses),
+            earliest=_epoch(earliest),
+            latest=_epoch(latest),
+            fields=table_fields(),
+            limit=self.limit,
+        )
+
+    def host_window(
+        self, hosts: list[str], earliest: datetime, latest: datetime
+    ) -> str:
+        """Every alert naming one of these hosts in a time range.
+
+        Used by the learned-rule matcher: it needs the alerts around a step
+        that carry no marker, and the same hosts' alerts in a quiet window.
+        """
+        names = []
+        for host in hosts:
+            short = host.strip().lower().split(".", 1)[0]
+            if not _HOST_RE.match(short):
+                raise SplunkESQueryRefusedError(
+                    f"Search refused: '{host}' is not a plain host name"
+                )
+            if f'"{short}*"' not in names:
+                names.append(f'"{short}*"')
+        if not names:
+            raise SplunkESQueryRefusedError("Search refused: no host to search for")
+        joined = ",".join(names)
+        return self.store.render(
+            "host_window_search",
+            index=self.index,
+            sourcetype_filter=self._sourcetype_filter(),
+            host_filter=" OR ".join(f"{f} IN ({joined})" for f in HOST_FIELDS),
             earliest=_epoch(earliest),
             latest=_epoch(latest),
             fields=table_fields(),

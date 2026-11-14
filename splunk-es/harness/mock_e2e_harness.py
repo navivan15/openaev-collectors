@@ -1025,7 +1025,7 @@ def flow_template_proving():
     except SplunkESQueryRefusedError as e:
         fails.append(f"proven template refused: {e}")
     shipped = TemplateStore().ids()
-    if sorted(shipped) != ["narrow_location_search", "wide_step_search"]:
+    if sorted(shipped) != ["host_window_search", "narrow_location_search", "wide_step_search"]:
         fails.append(f"shipped templates usable: {shipped}")
     return fails, "unproven / unsafe templates refused; new one saved only after a mock run"
 

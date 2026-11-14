@@ -95,7 +95,8 @@ main { padding: 22px 26px 60px; min-width: 0; }
 @media (prefers-reduced-motion: reduce) { .feed li { animation: none; } }
 .who { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); padding-top: 2px; }
 .what b { font-weight: 600; }
-.what .d { color: var(--muted); }
+.what .d, td .d { color: var(--muted); }
+td .d { font-size: 12px; }
 code, .spl { font-family: var(--mono); font-size: 12.5px; }
 code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
 .spl { background: var(--code-bg); border: 1px solid var(--line-2); border-radius: 8px; padding: 9px 11px; margin: 7px 0 4px;
@@ -148,7 +149,7 @@ details.log pre { background: var(--code-bg); border: 1px solid var(--line-2); b
 </head>
 <body>
 <div class="top">
-  <div class="brand"><h1>Detection Validation Sandbox</h1><span>Splunk collector, step by step</span></div>
+  <div class="brand"><h1>Detection Validation Sandbox</h1><span>every ant, step by step</span></div>
   <div class="mock" title="Every run uses the mock Splunk and mock OpenAEV from the test harness">Mock sandbox: no real Splunk, no real hosts</div>
   <button class="btn" id="runAll">Run all tests</button>
 </div>
@@ -200,6 +201,7 @@ function chipFor(last) {
   if (!last) return el("span", { class: "chip neu", text: "Not run" });
   if (!last.ok) return el("span", { class: "chip bad", text: "Check failed" });
   const outcome = last.outcomes[last.outcomes.length - 1];
+  if (last.pipeline) return el("span", { class: "chip det", text: "Passed" });
   if (!outcome) return el("span", { class: "chip neu", text: "Checked" });
   return el("span", { class: "chip " + OUTCOME_CLASS[outcome], text: outcome });
 }
@@ -461,6 +463,7 @@ async function renderMain(animate) {
     return;
   }
   if (run.error) { main.append(el("section", { class: "card" }, el("div", { class: "empty", text: run.error }))); return; }
+  if (run.events.some((e) => e.type === "ant")) { await renderPipeline(main, run, animate, test.id); return; }
   const cycles = cyclesOf(run.events).filter((c) => c.end);
   const names = cycles.length > 1 ? ["First run", "Repeat run (same test, new run)"] : ["Arena"];
   const cards = cycles.map((c, i) => {
@@ -480,6 +483,113 @@ async function renderMain(animate) {
   if (!animate) { for (const [card, d] of cards) await playCycle(card, d, false); tail(); return; }
   for (const [card, d] of cards) { await playCycle(card, d, true); if (state.selected !== test.id) return; }
   tail();
+}
+
+
+/* ---------- full pipeline (all ants) ---------- */
+const ANTS = ["Planner", "Gatekeeper", "Agent", "Splunk observer", "Falcon observer", "Analyst", "Matcher", "Reporter"];
+function pipelineRuns(events) {
+  const runs = [];
+  let cur = null;
+  for (const e of events) {
+    if (e.type === "run_start") { cur = { label: e.label, ants: [], end: null }; runs.push(cur); }
+    else if (e.type === "run_end" && cur) { cur.end = e; cur = null; }
+    else if (e.type === "ant") { if (!cur) { cur = { label: "Checks", ants: [], end: null }; runs.push(cur); } cur.ants.push(e); }
+  }
+  return runs;
+}
+function antStages(run, upTo) {
+  const seen = (name) => run.ants.slice(0, upTo).filter((e) => e.ant === name);
+  return el("div", { class: "stages", style: "grid-template-columns: repeat(auto-fit, minmax(104px, 1fr))" },
+    ANTS.map((name) => {
+      const mine = seen(name);
+      const bad = mine.find((e) => e.status !== "ok");
+      const cls = !mine.length ? "" : bad ? (bad.status === "none" ? "none" : "stop") : "done";
+      const status = !mine.length ? "waiting" : name === "Gatekeeper" && bad ? "refused something"
+        : bad ? (bad.status === "none" ? "regression" : "could not check") : "done";
+      return el("div", { class: "stage " + cls }, el("div", { class: "l", text: name }), el("div", { class: "s", text: status }));
+    }));
+}
+function antDetail(e) {
+  const out = [];
+  if (e.detail) out.push(el("div", { class: "spl", text: e.detail }));
+  if (e.ant === "Planner" && Array.isArray(e.data)) out.push(el("div", { class: "kv" },
+    e.data.map((s) => el("span", {}, el("i", { text: s.test + " " }), s.host))));
+  if (e.ant === "Gatekeeper" && Array.isArray(e.data) && e.data.length) out.push(el("div", { class: "kv" },
+    e.data.map((r) => el("span", {}, el("i", { text: `${r.test} on ${r.host}: ` }), r.why))));
+  if (e.ant === "Analyst" && Array.isArray(e.data)) out.push(el("div", { class: "kv" },
+    e.data.map((c) => el("span", {}, el("i", { text: `${c.test_id}: ${c.change}. ` }), c.why))));
+  if (/observer$/.test(e.ant) && Array.isArray(e.data)) out.push(el("div", { class: "kv" }, e.data.map((o) =>
+    el("span", {}, el("i", { text: (o.method === "step_marker" ? "marker in " + (o.field || "?") : o.reason ? (REASONS[o.reason] || o.reason) : o.method || "") + " " }),
+      o.outcome, o.search_path ? ` (${o.search_path} search)` : ""))));
+  return out;
+}
+function scoreCard(end) {
+  const r = end.report, t = r.totals;
+  const facts = el("div", { class: "grid" });
+  const fact = (k, v, x) => facts.append(el("div", { class: "fact" }, el("div", { class: "k", text: k }),
+    el("div", { class: "v" }, v), x ? el("div", { class: "x" }, x) : null));
+  fact("Detection rate", r.detection_rate === null ? "not scored" : Math.round(r.detection_rate * 100) + "%",
+    `${t.Detected + t.Prevented} of ${r.scored_steps} scored steps; unchecked and not-run steps are left out`);
+  fact("Outcomes", ["Detected", "Prevented", "Missed", "Could not check"].filter((o) => t[o]).map((o) =>
+    el("span", { class: "chip " + OUTCOME_CLASS[o], text: `${t[o]} ${o}`, style: "margin:0 4px 4px 0" })),
+    t["Not run"] ? `${t["Not run"]} not run (refused by the gatekeeper)` : null);
+  const s = r.splunk_searches || {};
+  fact("Splunk searches this run", plural((s.narrow || 0) + (s.wide || 0) + (s.candidates || 0), "search"),
+    [s.narrow ? `${s.narrow} narrow` : null, s.wide ? `${s.wide} wide` : null, s.candidates ? `${s.candidates} for the learned rule` : null]
+      .filter(Boolean).join(" + ") || "none");
+  fact("Audit log", r.audit_intact ? "Chain intact" : "Chain broken", `${(end.audit || []).length} most recent entries below`);
+  const card = el("section", { class: "card" }, el("header", {}, el("h3", { text: "Scorecard" })), el("div", { class: "body" }, facts));
+  const table = (title, heads, rows) => card.append(el("div", { class: "body", style: "padding-top:0" }, el("div", { class: "fact" },
+    el("div", { class: "k", text: title }), el("div", { class: "tbl-wrap" }, el("table", {},
+      el("thead", {}, el("tr", {}, heads.map((h) => el("th", { text: h })))), el("tbody", {}, rows))))));
+  if (r.steps.length) table("Steps", ["Test", "Host", "Verdict", "What each source saw", "Findings"], r.steps.map((v) => el("tr", {},
+    el("td", {}, b(v.test_id), el("div", { class: "d", text: v.title })), el("td", { class: "mono", text: v.host }),
+    el("td", {}, el("span", { class: "chip " + OUTCOME_CLASS[v.outcome], text: v.outcome }),
+      v.reason ? el("div", { class: "d", text: REASONS[v.reason] || v.reason }) : null),
+    el("td", {}, v.observations.map((o) => el("div", {}, b(o.source + ": "), o.outcome,
+      o.method === "learned_rule" ? " (learned rule)" : o.outcome === "Could not check" || o.outcome === "Missed" ? ` (${REASONS[o.reason] || o.reason})` : "")),
+      v.sightings ? el("div", { class: "d", text: `counted as ${plural(v.sightings, "detection")}` }) : null),
+    el("td", {}, v.findings.length ? v.findings.map((f) => el("div", { text: f })) : "–"))));
+  if (r.not_run.length) table("Not run", ["Test", "Host", "Refused because"], r.not_run.map((n) => el("tr", {},
+    el("td", {}, b(n.test_id)), el("td", { class: "mono", text: n.host }), el("td", { text: n.detail }))));
+  if ((r.search_changes || []).length) table("Search changes and why (the analyst's change log)",
+    ["Test", "Change", "Searched before", "Will search next", "Why"], r.search_changes.map((c) => el("tr", {},
+      el("td", {}, b(c.test_id), el("div", { class: "d", text: c.host })),
+      el("td", {}, el("span", { class: "chip " + ({ learned: "det", added: "det", dropped: "mis", unchecked: "cnc" }[c.change] || "neu"), text: c.change })),
+      el("td", { text: c.search_before }), el("td", { text: c.search_next }), el("td", { text: c.why }))));
+  if (r.drift.length) table("Change since the last run", ["Test", "Host", "Was", "Now", "Reading"], r.drift.map((d) => el("tr", {},
+    el("td", {}, b(d.test_id)), el("td", { class: "mono", text: d.host }), el("td", { text: d.was }), el("td", { text: d.now }),
+    el("td", {}, el("span", { class: "chip " + (d.kind === "regression" || d.kind === "weaker" ? "mis" : d.kind === "improvement" ? "det" : "cnc"),
+      text: d.kind === "unknown" ? "unknown, not a regression" : d.kind })))));
+  if ((end.audit || []).length) table("Gatekeeper audit log (latest entries)", ["#", "Event", "Test", "Host", "Detail"], end.audit.map((a) => el("tr", {},
+    el("td", { text: a.seq }), el("td", {}, el("span", { class: "chip " + (a.event === "refused" || a.event === "sign_refused" || a.event === "kill_switch_engaged" ? "cnc" : "neu"), text: a.event })),
+    el("td", { text: a.test_id || "–" }), el("td", { class: "mono", text: a.host || "–" }),
+    el("td", { text: a.detail || a.reason || (a.actor ? "by " + a.actor : "–") }))));
+  return card;
+}
+async function renderPipeline(main, run, animate, testId) {
+  for (const pr of pipelineRuns(run.events)) {
+    const stagesHost = el("div"), feed = el("ul", { class: "feed" });
+    main.append(el("section", { class: "card" }, el("header", {}, el("h3", { text: pr.label }),
+      el("span", { class: "sub", text: "every ant runs for real; Splunk, Falcon and the endpoint are mocks" })), stagesHost, feed));
+    for (let i = 0; i < pr.ants.length; i++) {
+      const e = pr.ants[i];
+      feed.append(el("li", {}, el("div", { class: "who", text: e.ant }), el("div", { class: "what" }, b(e.title), antDetail(e))));
+      if (animate) {
+        stagesHost.replaceChildren(antStages(pr, i + 1));
+        await new Promise((r) => setTimeout(r, 300));
+        if (state.selected !== testId) return false;
+      }
+    }
+    stagesHost.replaceChildren(antStages(pr, pr.ants.length));
+    if (pr.end) main.append(scoreCard(pr.end));
+  }
+  main.append(el("section", { class: "card" }, el("div", { class: "check " + (run.ok ? "ok" : "no"), style: "border-top:0" },
+    b(run.ok ? "Check passed." : "Check failed."), el("span", { text: run.ok ? run.note
+      : "The run did not match the expected result: " + (run.fails || []).join("; ") }))));
+  main.append(el("details", { class: "log" }, el("summary", { text: "Raw log of this run" }), el("pre", { text: run.log })));
+  return true;
 }
 
 /* ---------- running ---------- */
@@ -524,7 +634,7 @@ $("runAll").addEventListener("click", runAll);
 
 fetch("/api/catalogue").then((r) => r.json()).then((data) => {
   state.groups = data.groups; state.last = data.last || {};
-  state.selected = "marker_match";
+  state.selected = testById("full_run") ? "full_run" : "marker_match";
   renderSide(); renderMain(false);
 }).catch(() => { $("main").replaceChildren(el("div", { class: "empty", text: "The demo runner is not answering." })); });
 </script>

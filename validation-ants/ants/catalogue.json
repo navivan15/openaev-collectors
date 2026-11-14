@@ -1,0 +1,55 @@
+{
+  "version": 1,
+  "actions": {
+    "echo_marker": {
+      "description": "Run a shell that only echoes the step marker.",
+      "command": "cmd.exe /c echo oaev-step-{marker}",
+      "agentless": false
+    },
+    "drop_marker_file": {
+      "description": "Create an empty file whose name carries the step marker, then delete it.",
+      "command": "cmd.exe /c type nul > %TEMP%\\oaev-step-{marker}.txt & del %TEMP%\\oaev-step-{marker}.txt",
+      "agentless": false
+    },
+    "dns_lookup_marker": {
+      "description": "Look up a hostname under a reserved, non-resolving domain that carries the step marker.",
+      "command": "nslookup oaev-step-{marker}.sim.invalid",
+      "agentless": false
+    },
+    "tcp_probe": {
+      "description": "Open and close one TCP connection from the source to the target address. No payload.",
+      "command": "tcp-connect {target_ip}:445",
+      "agentless": true
+    }
+  },
+  "tests": [
+    {
+      "id": "T-EXEC-001",
+      "title": "Command shell runs a marked command",
+      "technique": "T1059.003",
+      "action": "echo_marker",
+      "expect": {"falcon": "detection", "splunk": "detection"}
+    },
+    {
+      "id": "T-FILE-002",
+      "title": "Marked file dropped in the temp folder",
+      "technique": "T1105",
+      "action": "drop_marker_file",
+      "expect": {"falcon": "prevention", "splunk": "detection"}
+    },
+    {
+      "id": "T-DNS-003",
+      "title": "Lookup of a marked hostname",
+      "technique": "T1071.004",
+      "action": "dns_lookup_marker",
+      "expect": {"splunk": "detection"}
+    },
+    {
+      "id": "T-NET-004",
+      "title": "Connection to a file-sharing port",
+      "technique": "T1021.002",
+      "action": "tcp_probe",
+      "expect": {"splunk": "detection"}
+    }
+  ]
+}

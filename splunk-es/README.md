@@ -202,9 +202,10 @@ On each run, the collector:
 Every search the collector sends is built from a template and then checked. No search text is written freely, by a
 person at runtime or by a model.
 
-- **Templates are data.** `src/services/query_templates.json` holds two: `wide_step_search` (the configured index and
-  sourcetypes, every step of the run in one search) and `narrow_location_search` (only the index and sourcetype where a
-  detection was found before, with a tighter time window). The placeholders are filled from validated pieces only: IP
+- **Templates are data.** `src/services/query_templates.json` holds three: `wide_step_search` (the configured index and
+  sourcetypes, every step of the run in one search), `narrow_location_search` (only the index and sourcetype where a
+  detection was found before, with a tighter time window) and `host_window_search` (every alert naming given hosts in
+  a time range, used by the learned-rule matcher in `validation-ants/`). The placeholders are filled from validated pieces only: IP
   addresses, inject IDs, and index / sourcetype names that match a plain-name pattern. Times are epoch seconds.
 - **One search per run, not per step.** All step markers of a cycle go into one search. Three steps cost one search on
   a first run and one on a repeat run; searching per step would cost three.
@@ -330,7 +331,11 @@ needs nothing beyond the collector's own Python environment:
 python harness/demo_server.py          # then open http://127.0.0.1:8140
 ```
 
-The demo proves the collector's logic on synthetic data. It does not prove how a real Splunk behaves.
+When `validation-ants/` is present, the page also lists its scenarios under "All ants: full pipeline" and shows a run
+ant by ant (planner, gatekeeper, agent, both observers, analyst, matcher, reporter) with the scorecard, the analyst's
+search-change log and the gatekeeper's audit log.
+
+The demo proves the logic on synthetic data. It does not prove how a real Splunk or a real Falcon tenant behaves.
 
 Search counts in the mock: one step costs 1 wide search on a first run and 1 narrow search on a repeat run. When the
 first run has to poll for a late alert it costs 2 or more; the repeat run still costs 1. Three steps in one cycle cost

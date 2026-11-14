@@ -196,6 +196,20 @@ class SplunkESExpectationService:
                 f"Error in handle_batch_expectations: {e}"
             ) from e
 
+    def candidate_alerts(
+        self, hosts: list[str], earliest: datetime, latest: datetime
+    ) -> list[dict[str, Any]]:
+        """Alerts naming these hosts in a time range (one checked search).
+
+        For callers that judge alerts without a step marker, such as a
+        learned-rule matcher comparing a step's window with a quiet window.
+        Raises the same errors as a normal search, so a broken connection can
+        be reported as Could not check.
+        """
+        self.client_api.ensure_index_available()
+        spl = self._get_writer().host_window(hosts, earliest, latest)
+        return self.converter.convert_data_to_oaev_data(self.client_api.run_search(spl))
+
     def _get_memory(self) -> LocationMemory:
         if self._memory is None:
             cfg = getattr(self.config, "splunk_es", None)
