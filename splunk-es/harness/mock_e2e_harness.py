@@ -16,6 +16,11 @@ Usage:
   python harness/mock_e2e_harness.py all               # every scenario, pass/fail table
   python harness/mock_e2e_harness.py prove_templates   # run the repo's query templates
                                                        # against the mock and stamp them
+  python harness/mock_e2e_harness.py catalogue         # the scenario catalogue as JSON
+  python harness/demo_server.py                        # sandbox demo page on 127.0.0.1:8140
+
+When HARNESS_EVENTS_FILE is set, the run is also written there as structured
+events (JSON) - that is what the demo page shows.
 
 Every scenario asserts its result and the process exits non-zero on a mismatch.
 """
@@ -38,6 +43,18 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "detected"
+
+EVENTS = []   # structured record of the run, for the demo page
+
+
+def event(type_, **data):
+    EVENTS.append({"type": type_, **data})
+
+
+def dump_events():
+    path = os.environ.get("HARNESS_EVENTS_FILE")
+    if path:
+        Path(path).write_text(json.dumps(EVENTS, default=str), encoding="utf-8")
 
 
 def log_wire(system, direction, summary, body=None):
@@ -88,6 +105,95 @@ SCENARIOS = {
     "query_refused":     {"outcome": "Could not check", "reason": "query_refused",
                           "searches": []},
 }
+
+# ----------------------------------------------------------------------------
+# Catalogue: what each scenario shows, in plain words (used by the demo page)
+# ----------------------------------------------------------------------------
+CATALOGUE = [
+    ("Tying an alert to a step", [
+        ("marker_match", "Marker in a command line",
+         "An endpoint event carries the step's marker in its command line and names the right host."),
+        ("marker_file", "Marker in a file name",
+         "The marker (without dashes) is in the name of a file the step dropped."),
+        ("marker_dns", "Marker in a DNS lookup",
+         "The step looked up a hostname that contains its marker."),
+        ("detected", "Implant process event",
+         "An event names the step's implant as parent process. The implant name contains the marker."),
+        ("implant_url", "Implant download in proxy logs",
+         "Only the implant's download URL and the IP pair are logged. The older matching still ties it to the step."),
+        ("ip_only", "Network step, IPs only",
+         "A step without an agent has no marker. It is matched on its source and target IP."),
+        ("ipv6", "Network step over IPv6",
+         "The same IP-only match with IPv6 addresses."),
+        ("token", "Token sign-in to Splunk",
+         "Same detection, with the collector signing in by bearer token instead of user and password."),
+    ]),
+    ("Alerts that must not count", [
+        ("marker_absent", "Right host, no marker",
+         "An alert on the right host, at the right time, with the right IPs, but nothing ties it to this step."),
+        ("wrong_host", "Marker on another host",
+         "The marker is there, but the alert names a different endpoint."),
+        ("time_window_miss", "Marker outside the time window",
+         "The marker is there, but the alert is 40 minutes older than the step."),
+        ("not_detected", "Unrelated noise",
+         "Splunk returns an alert that has nothing to do with the step."),
+        ("ip_bleed", "Known limit: stale alert, same IPs",
+         "A network step has no marker, so an old alert with the same IP pair still counts. Shown on purpose."),
+    ]),
+    ("Could not check", [
+        ("auth_fail", "Splunk rejects the sign-in",
+         "Splunk answers 401. The step is not scored as missed."),
+        ("cnc_unreachable", "Splunk is unreachable",
+         "Nothing answers on the Splunk port."),
+        ("cnc_missing_index", "The index does not exist",
+         "The configured index is missing, so an empty search would prove nothing."),
+        ("cnc_search_error", "Splunk reports a failed search",
+         "Splunk returns no rows and an error message."),
+        ("cnc_wide_conn", "Connection drops during the wide search",
+         "The index check works, then the connection breaks on the search itself."),
+        ("cnc_narrow_conn", "Connection drops during the narrow search",
+         "The remembered place cannot be reached. The wide search is not attempted and the memory is kept."),
+        ("prevention", "Prevention sent to a detection-only source",
+         "Splunk cannot say whether something was blocked."),
+    ]),
+    ("Query writer", [
+        ("batched_markers", "Three steps, one search",
+         "Three steps in one cycle share a single search, on the first run and on the repeat run."),
+        ("late_alert", "Alert arrives late",
+         "The first search is empty; the collector polls again and finds the alert."),
+        ("not_yet_due", "Step not due yet",
+         "The step only just ended. It is not searched and gets no verdict yet."),
+        ("query_refused", "Unsafe query refused",
+         "A custom query ending in '| delete' is refused before anything is sent."),
+        ("validator_rules", "What the validator refuses",
+         "Fifteen searches that write, delete, send, call out, run scripts or lack an index, sourcetype or time window."),
+        ("template_proving", "A template must be proven first",
+         "A new query template can only be saved after it has been run against the mock."),
+    ]),
+    ("Location memory", [
+        ("memory_narrow_hit", "Repeat run looks in the remembered place",
+         "The first run searches wide and remembers where the detection was. The repeat run searches only there."),
+        ("memory_late_first_run", "Fewer searches on the repeat run",
+         "The first run has to poll twice. The repeat run needs one narrow search."),
+        ("memory_wide_fallback", "Detection moved",
+         "The remembered place is empty, so the wide search runs and finds it elsewhere. The new place is remembered."),
+        ("memory_miss", "Gone from both places",
+         "Missed only after the remembered place and the wide search are both empty."),
+        ("memory_expired", "Old entry is not trusted",
+         "A 60-day-old entry is skipped. The wide search runs and proves the place again."),
+        ("memory_periodic_wide", "Every fifth run searches wide",
+         "A valid entry exists, but it is time for a wide search so a moved or new detection is seen."),
+        ("falcon_id", "Falcon alert forwarded into Splunk",
+         "The Falcon alert id is kept in the trace so the same detection can be counted once."),
+    ]),
+]
+
+
+def catalogue_json():
+    return [{"group": group, "tests": [
+        {"id": sid, "title": title, "blurb": blurb} for sid, title, blurb in tests]}
+        for group, tests in CATALOGUE]
+
 
 # ----------------------------------------------------------------------------
 # Fixture: synthetic steps (injects) and their expectations
@@ -269,6 +375,7 @@ class SplunkHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(b'{"messages":[{"type":"WARN","text":"login failed"}]}')
             log_wire("SPLUNK", "res", "401 Unauthorized")
+            event("auth_failed")
             return False
         return True
 
@@ -291,9 +398,11 @@ class SplunkHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"messages": [{"type": "ERROR",
                                                 "text": f"Could not find object id={name}"}]})
             log_wire("SPLUNK", "res", "404 Not Found")
+            event("index_check", index=name, ok=False)
             return
         self._send_json(200, {"entry": [{"name": name}]})
         log_wire("SPLUNK", "res", "200 OK")
+        event("index_check", index=name, ok=True)
 
     def do_POST(self):
         if not self._auth_ok():
@@ -308,8 +417,10 @@ class SplunkHandler(BaseHTTPRequestHandler):
         STATE["spl"].append(spl)
         log_wire("SPLUNK", "req", f"POST {self.path}  exec_mode=oneshot  [{kind} search]")
         print(f"              SPL: {spl}")
+        event("search", kind=kind, spl=spl)
 
         if STATE["drop_search"]:
+            event("dropped", kind=kind)
             # Simulate a connection that breaks mid-request: no response at all.
             log_wire("SPLUNK", "res", "(connection dropped)")
             self.close_connection = True
@@ -323,6 +434,7 @@ class SplunkHandler(BaseHTTPRequestHandler):
                 {"type": "ERROR", "text": "Error in 'search' command: search failed"}]}
             self._send_json(200, payload)
             log_wire("SPLUNK", "res", "200 OK (0 rows, ERROR message)", payload["messages"])
+            event("search_error", message=payload["messages"][0]["text"])
             return
         results = [dict(r) for r in STATE["rows"](kind, len(STATE["searches"]))]
         for row in results:   # every real row has these; default them for old fixtures
@@ -332,6 +444,7 @@ class SplunkHandler(BaseHTTPRequestHandler):
                    "fields": [{"name": k} for k in results[0].keys()] if results else []}
         self._send_json(200, payload)
         log_wire("SPLUNK", "res", f"200 OK ({len(results)} row(s))", results)
+        event("rows", kind=kind, rows=results)
 
 
 class OpenAEVHandler(BaseHTTPRequestHandler):
@@ -455,6 +568,24 @@ def cycle(collector, expectations):
     STATE["searches"], STATE["spl"] = [], []
     CAPTURED.update({"bulk_update": None, "individual": [], "traces": None, "results": []})
     print(f" CYCLE ({len(expectations)} expectation(s)) - wire trace:")
+    steps = []
+    for exp in expectations:
+        sigs = {}
+        for sig in exp["inject_expectation_signatures"]:
+            sigs.setdefault(sig["type"], sig["value"])
+        steps.append({
+            "id": exp["inject_expectation_id"],
+            "kind": exp["inject_expectation_type"],
+            "inject": exp["inject_expectation_inject"],
+            "asset": exp["inject_expectation_asset"],
+            "has_marker": "parent_process_name" in sigs,
+            "host": sigs.get("target_hostname_address"),
+            "source_ip": sigs.get("source_ipv4_address") or sigs.get("source_ipv6_address"),
+            "target_ip": sigs.get("target_ipv4_address") or sigs.get("target_ipv6_address"),
+            "start": sigs.get("start_date"),
+            "end": sigs.get("end_date"),
+        })
+    event("cycle_start", steps=steps, memory=read_memory())
     summary = collector["manager"].process_expectations(detection_helper=collector["helper"])
     verdicts = {}
     bulk = CAPTURED["bulk_update"]
@@ -462,6 +593,23 @@ def cycle(collector, expectations):
         for eid, upd in bulk["inputs"].items():
             verdicts[eid] = (upd.get("result"), upd.get("is_success"))
     traces = (CAPTURED["traces"] or {}).get("expectation_traces", [])
+    event(
+        "cycle_end",
+        results=[{
+            "id": r.expectation_id,
+            "outcome": r.outcome.value,
+            "reason": r.outcome_reason,
+            "method": r.match_method,
+            "field": r.match_field,
+            "path": r.search_path,
+            "message": r.error_message,
+            "verdict": verdicts.get(r.expectation_id),
+        } for r in CAPTURED["results"]],
+        traces=[t.get("inject_expectation_trace_alert_name") for t in traces],
+        searches=list(STATE["searches"]),
+        deferred=summary.deferred,
+        memory=read_memory(),
+    )
     return {
         "summary": summary,
         "results": {r.expectation_id: r for r in CAPTURED["results"]},
@@ -641,7 +789,7 @@ def flow_memory_late_first_run():
 
 
 def flow_memory_wide_fallback():
-    """Remembered place is empty -> wide search finds it elsewhere -> memory updated."""
+    """Remembered place is empty -> wide search finds it elsewhere -> new place remembered first."""
     set_env()
     seed_memory(sourcetype="old:sourcetype")
     exp = expectation(n=3, include_host=True)
@@ -653,7 +801,7 @@ def flow_memory_wide_fallback():
     newest = (read_memory().get(memory_key(), {}).get("locations") or [{}])[0]
     if newest.get("sourcetype") != "XmlWinEventLog":
         fails.append(f"memory not updated to the new place: {newest}")
-    return fails, "narrow empty, wide hit, memory moved to the new sourcetype"
+    return fails, "narrow empty, wide hit, new place added to the memory"
 
 
 def flow_memory_miss():
@@ -814,10 +962,12 @@ def flow_validator_rules():
             fails.append(f"NOT refused: {label}")
         except SplunkESQueryRefusedError as e:
             print(f"   refused  {label:<36} {e}")
+            event("validator", label=label, spl=spl, refused=True, message=str(e))
     for label, spl in accepted.items():
         try:
             validate_spl(spl)
             print(f"   accepted {label}")
+            event("validator", label=label, spl=spl, refused=False, message="")
         except SplunkESQueryRefusedError as e:
             fails.append(f"wrongly refused: {label} ({e})")
     return fails, f"{len(refused)} searches refused, {len(accepted)} accepted"
@@ -851,6 +1001,7 @@ def flow_template_proving():
             fails.append(f"NOT refused: {label}")
         except SplunkESQueryRefusedError as e:
             print(f"   refused  {label:<40} {e}")
+            event("template", label=label, refused=True, message=str(e))
 
     values = dict(index="main", sourcetype_filter="sourcetype=*", step_filter='("x")',
                   earliest=1, latest=2, fields="_time", limit=10)
@@ -864,6 +1015,8 @@ def flow_template_proving():
         fails.append("the new template was not run against the mock before saving")
     if not saved.get("proven"):
         fails.append("saved template has no proven stamp")
+    event("template", label="new template, run against the mock first", refused=False,
+          message=f"saved with stamp {json.dumps(saved.get('proven'))}", spl=saved["spl"])
     reloaded = TemplateStore(path)
     if reloaded.ids() != ["count_by_sourcetype"]:
         fails.append(f"usable templates after reload: {reloaded.ids()}")
@@ -928,6 +1081,9 @@ def run_all():
 def main():
     if SCENARIO == "all":
         sys.exit(run_all())
+    if SCENARIO == "catalogue":
+        print(json.dumps(catalogue_json()))
+        sys.exit(0)
     known = list(SCENARIOS) + list(FLOWS) + ["prove_templates"]
     if SCENARIO not in known:
         print(f"unknown scenario {SCENARIO!r}; choose one of: all, {', '.join(known)}")
@@ -950,6 +1106,8 @@ def main():
         print(f"HARNESS FAIL {note} :: " + "; ".join(fails))
     else:
         print(f"HARNESS PASS {note}")
+    event("harness", ok=not fails, note=note, fails=fails)
+    dump_events()
     splunk.shutdown()
     openaev.shutdown()
     sys.exit(1 if fails else 0)

@@ -319,6 +319,19 @@ a refused query, the validator's rules, template proving, batched markers, and t
 remembered place empty then wide hit, both empty (`Missed`), expired entry and periodic wide search. It counts the
 searches each run sends and exits non-zero when a scenario's result is not the expected one.
 
+**Sandbox demo page.** `harness/demo_server.py` serves a local page (`harness/demo/index.html`) on
+`http://127.0.0.1:8140` that shows the same scenarios as a catalogue, runs one on request and shows the run stage by
+stage (step fired, search written, validator, search sent, alert matched, outcome), with the outcome, the searches sent
+on a first and a repeat run, and what the location memory learned. Every run is the real collector code against the
+mock; the page shows the structured events the harness recorded (`HARNESS_EVENTS_FILE`). It binds to 127.0.0.1 only and
+needs nothing beyond the collector's own Python environment:
+
+```shell
+python harness/demo_server.py          # then open http://127.0.0.1:8140
+```
+
+The demo proves the collector's logic on synthetic data. It does not prove how a real Splunk behaves.
+
 Search counts in the mock: one step costs 1 wide search on a first run and 1 narrow search on a repeat run. When the
 first run has to poll for a late alert it costs 2 or more; the repeat run still costs 1. Three steps in one cycle cost
 1 search on either run.

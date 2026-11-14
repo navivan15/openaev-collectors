@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Detection Validation Sandbox</title>
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --panel-2: #f9fafb; --line: #e2e5ea; --line-2: #eef0f3;
+  --text: #171a21; --muted: #5d6676; --faint: #8a93a3;
+  --accent: #2f55d4; --accent-ink: #ffffff; --accent-soft: #e9eefc;
+  --ok: #17794a; --ok-soft: #e3f4ea; --miss: #b3261e; --miss-soft: #fbe9e7;
+  --cnc: #8a5a00; --cnc-soft: #fdf1d7; --prev: #1f5fa8; --prev-soft: #e4effb;
+  --code-bg: #f3f4f7; --narrow: #7a3fc4; --wide: #2f55d4;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1218; --panel: #171b23; --panel-2: #1b202a; --line: #2a303c; --line-2: #222833;
+    --text: #e8ebf1; --muted: #a2abbb; --faint: #7a8496;
+    --accent: #7f9cff; --accent-ink: #0c1020; --accent-soft: #1f2a4d;
+    --ok: #5fd39a; --ok-soft: #153325; --miss: #ff8a80; --miss-soft: #3b1a18;
+    --cnc: #f2c35c; --cnc-soft: #3a2d0e; --prev: #86bdfb; --prev-soft: #15293f;
+    --code-bg: #11151c; --narrow: #c09bff; --wide: #7f9cff;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); }
+button { font: inherit; color: inherit; cursor: pointer; }
+h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+
+.top { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 14px;
+  padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.brand h1 { font-size: 16px; white-space: nowrap; }
+.brand span { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mock { margin-left: auto; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+  background: var(--cnc-soft); color: var(--cnc); white-space: nowrap; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 7px 14px; font-weight: 600;
+  white-space: nowrap; }
+.btn:hover { border-color: var(--faint); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn:disabled { opacity: .55; cursor: default; }
+.btn:focus-visible, .test:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.layout { display: grid; grid-template-columns: 330px minmax(0, 1fr); min-height: calc(100vh - 53px); }
+.layout > * { min-width: 0; }
+.side { border-right: 1px solid var(--line); background: var(--panel); padding: 14px 10px 30px; overflow-y: auto;
+  max-height: calc(100vh - 53px); position: sticky; top: 53px; }
+.side h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); padding: 14px 10px 6px; }
+.side h2:first-child { padding-top: 2px; }
+.test { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 0; background: none;
+  padding: 7px 10px; border-radius: 8px; }
+.test:hover { background: var(--panel-2); }
+.test[aria-current="true"] { background: var(--accent-soft); }
+.test .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-size: 12px;
+  font-weight: 600; white-space: nowrap; }
+.chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.chip.det { background: var(--ok-soft); color: var(--ok); }
+.chip.mis { background: var(--miss-soft); color: var(--miss); }
+.chip.cnc { background: var(--cnc-soft); color: var(--cnc); }
+.chip.prv { background: var(--prev-soft); color: var(--prev); }
+.chip.neu { background: var(--line-2); color: var(--muted); }
+.chip.bad { background: var(--miss); color: #fff; }
+
+main { padding: 22px 26px 60px; min-width: 0; }
+.head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
+.head h2 { font-size: 22px; }
+.head p { margin: 4px 0 0; color: var(--muted); max-width: 70ch; }
+.head .btn { margin-left: auto; flex: none; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 16px; }
+.card > header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line-2); }
+.card > header h3 { font-size: 14px; }
+.card > header .sub { color: var(--muted); font-size: 13px; }
+.card .body { padding: 14px 16px; }
+.empty { color: var(--muted); padding: 26px 16px; text-align: center; }
+
+.stages { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; padding: 14px 16px 4px; }
+.stage { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--panel-2); min-width: 0; }
+.stage .n { font-size: 11px; color: var(--faint); }
+.stage .l { font-weight: 600; font-size: 13px; line-height: 1.25; margin: 1px 0; overflow-wrap: anywhere; }
+.stage .s { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage.done { border-color: var(--ok); background: var(--ok-soft); } .stage.done .s { color: var(--ok); }
+.stage.stop { border-color: var(--cnc); background: var(--cnc-soft); } .stage.stop .s { color: var(--cnc); }
+.stage.none { border-color: var(--miss); background: var(--miss-soft); } .stage.none .s { color: var(--miss); }
+
+.feed { list-style: none; margin: 0; padding: 8px 16px 14px; }
+.feed li { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 12px; padding: 9px 0; border-top: 1px solid var(--line-2);
+  animation: in .25s ease-out; }
+.feed li:first-child { border-top: 0; }
+@keyframes in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .feed li { animation: none; } }
+.who { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); padding-top: 2px; }
+.what b { font-weight: 600; }
+.what .d { color: var(--muted); }
+code, .spl { font-family: var(--mono); font-size: 12.5px; }
+code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+.spl { background: var(--code-bg); border: 1px solid var(--line-2); border-radius: 8px; padding: 9px 11px; margin: 7px 0 4px;
+  white-space: pre-wrap; overflow-wrap: anywhere; }
+.spl .pipe { color: var(--faint); }
+.tag { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 5px; margin-right: 6px;
+  text-transform: uppercase; letter-spacing: .04em; }
+.tag.narrow { background: color-mix(in srgb, var(--narrow) 16%, transparent); color: var(--narrow); }
+.tag.wide { background: color-mix(in srgb, var(--wide) 16%, transparent); color: var(--wide); }
+.kv { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 6px; }
+.kv span { background: var(--code-bg); border-radius: 5px; padding: 1px 7px; font-family: var(--mono); font-size: 12px;
+  overflow-wrap: anywhere; }
+.kv span i { font-style: normal; color: var(--faint); }
+.kv span.hit { outline: 1.5px solid var(--ok); }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
+.fact { border: 1px solid var(--line-2); border-radius: 10px; padding: 10px 12px; background: var(--panel-2); min-width: 0; }
+.fact .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); }
+.fact .v { font-weight: 600; margin-top: 2px; overflow-wrap: anywhere; }
+.fact .x { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.dots { display: flex; gap: 5px; align-items: center; margin-top: 5px; flex-wrap: wrap; }
+.dot { width: 22px; height: 8px; border-radius: 4px; }
+.dot.narrow { background: var(--narrow); } .dot.wide { background: var(--wide); }
+.tbl-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 6px 10px; border-top: 1px solid var(--line-2); vertical-align: top; }
+th { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; border-top: 0; }
+td.mono { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+.check { display: flex; gap: 10px; align-items: baseline; padding: 10px 16px; border-top: 1px solid var(--line-2); font-size: 13px; }
+.check.ok b { color: var(--ok); } .check.no b { color: var(--miss); }
+details.log { margin-top: 4px; }
+details.log summary { cursor: pointer; color: var(--muted); padding: 6px 2px; }
+details.log pre { background: var(--code-bg); border: 1px solid var(--line-2); border-radius: 8px; padding: 12px; margin: 6px 0 0;
+  max-height: 420px; overflow: auto; font: 12px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.note { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; min-height: 0; }
+  .side { position: static; max-height: 260px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .stages { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .brand span { display: none; }
+  .top { position: static; flex-wrap: wrap; gap: 8px 10px; padding: 10px 14px; }
+  .brand { flex: 1 0 100%; }
+  .mock { margin-left: 0; white-space: normal; flex: 1 1 auto; }
+  main { padding: 16px 14px 50px; }
+  .feed li { grid-template-columns: 1fr; gap: 2px; }
+  .head { flex-wrap: wrap; } .head .btn { margin-left: 0; }
+}
+</style>
+</head>
+<body>
+<div class="top">
+  <div class="brand"><h1>Detection Validation Sandbox</h1><span>Splunk collector, step by step</span></div>
+  <div class="mock" title="Every run uses the mock Splunk and mock OpenAEV from the test harness">Mock sandbox: no real Splunk, no real hosts</div>
+  <button class="btn" id="runAll">Run all tests</button>
+</div>
+<div class="layout">
+  <nav class="side" id="side" aria-label="Test catalogue"></nav>
+  <main id="main"><div class="empty">Loading the catalogue…</div></main>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+function el(tag, attrs, ...kids) {
+  const node = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v === null || v === undefined || v === false) continue;
+    if (k === "class") node.className = v; else if (k === "text") node.textContent = v;
+    else if (k.startsWith("on")) node.addEventListener(k.slice(2), v); else node.setAttribute(k, v);
+  }
+  for (const kid of kids.flat(Infinity)) if (kid !== null && kid !== undefined && kid !== false)
+    node.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return node;
+}
+const code = (t) => el("code", { text: t });
+const b = (t) => el("b", { text: t });
+const plural = (n, word) => `${n} ${word}${n === 1 ? "" : (word.endsWith("ch") ? "es" : "s")}`;
+
+const OUTCOME_CLASS = { "Detected": "det", "Prevented": "prv", "Missed": "mis", "Could not check": "cnc" };
+const REASONS = {
+  marker_absent: "alerts came back, but none carries this step's marker",
+  wrong_host: "the marker was found, but on a different host",
+  outside_time_window: "the marker was found, but outside the step's time window",
+  no_alerts: "the search returned nothing",
+  no_matching_alert: "alerts came back, but none matches this step",
+  auth_failed: "Splunk rejected the sign-in",
+  source_unreachable: "Splunk could not be reached",
+  data_source_missing: "the index does not exist or cannot be read",
+  search_failed: "Splunk reported that the search failed",
+  query_refused: "the query was refused before anything was sent",
+  expectation_not_supported: "Splunk only detects; it cannot judge a prevention",
+  collector_error: "the collector hit an internal error",
+};
+const TEMPLATE = { narrow: "narrow_location_search", wide: "wide_step_search" };
+const state = { groups: [], last: {}, selected: null, runs: {}, busy: false };
+const allTests = () => state.groups.flatMap((g) => g.tests);
+const testById = (id) => allTests().find((t) => t.id === id);
+
+/* ---------- catalogue ---------- */
+function chipFor(last) {
+  if (!last) return el("span", { class: "chip neu", text: "Not run" });
+  if (!last.ok) return el("span", { class: "chip bad", text: "Check failed" });
+  const outcome = last.outcomes[last.outcomes.length - 1];
+  if (!outcome) return el("span", { class: "chip neu", text: "Checked" });
+  return el("span", { class: "chip " + OUTCOME_CLASS[outcome], text: outcome });
+}
+function renderSide() {
+  const side = $("side");
+  side.replaceChildren();
+  for (const group of state.groups) {
+    side.append(el("h2", { text: group.group }));
+    for (const test of group.tests) {
+      side.append(el("button", {
+        class: "test", "aria-current": state.selected === test.id ? "true" : null, title: test.blurb,
+        onclick: () => select(test.id),
+      }, el("span", { class: "t", text: test.title }), chipFor(state.last[test.id])));
+    }
+  }
+}
+function select(id) {
+  state.selected = id;
+  renderSide();
+  renderMain(false);
+}
+
+/* ---------- reading a run ---------- */
+function cyclesOf(events) {
+  const cycles = [];
+  let cur = null;
+  for (const e of events) {
+    if (e.type === "cycle_start") { cur = { start: e, items: [], end: null }; cycles.push(cur); }
+    else if (e.type === "cycle_end" && cur) { cur.end = e; cur = null; }
+    else if (cur) cur.items.push(e);
+  }
+  return cycles;
+}
+function splBlock(spl) {
+  const box = el("div", { class: "spl" });
+  spl.split(" | ").forEach((part, i) => {
+    let text = part;
+    if (part.startsWith("table ")) {
+      const fields = part.slice(6).split(", ");
+      if (fields.length > 8) text = `table ${fields.slice(0, 6).join(", ")}, … +${fields.length - 6} more fields`;
+    }
+    if (i) box.append("\n", el("span", { class: "pipe", text: "| " }));
+    box.append(text);
+  });
+  box.title = spl;
+  return box;
+}
+function commandsOf(spl) {
+  return spl.split(" | ").slice(1).map((p) => p.trim().split(" ")[0]).join(", ") || "none";
+}
+function rowView(row, markers) {
+  const keys = ["_time", "index", "sourcetype", "dest_host", "src_ip", "dst_ip", "process", "file_name", "query",
+    "parent_process_name", "url_path", "event.CompositeId", "rule_name", "signature"];
+  const box = el("div", { class: "kv" });
+  for (const key of keys) {
+    if (row[key] === undefined || row[key] === null || row[key] === "") continue;
+    const value = String(row[key]);
+    const hit = markers.some((m) => value.toLowerCase().includes(m));
+    box.append(el("span", { class: hit ? "hit" : null, title: hit ? "carries the step marker" : null },
+      el("i", { text: key + " " }), value));
+  }
+  return box;
+}
+function memoryPlaces(memory) {
+  return Object.entries(memory || {}).flatMap(([key, entry]) =>
+    (entry.locations || []).map((loc) => ({ key, runs: entry.narrow_runs_since_wide, ...loc })));
+}
+function memoryChange(before, after) {
+  const a = memoryPlaces(before), z = memoryPlaces(after);
+  const set = (list) => [...new Set(list.map((p) => `${p.index} / ${p.sourcetype}`))];
+  const [was, now] = [set(a), set(z)];
+  if (!was.length && !now.length) return "Nothing remembered.";
+  if (!was.length) return `Learned where to look next time: ${now.join(", ")}.`;
+  if (!now.length) return "The remembered place was dropped: the detection is not there any more.";
+  const added = now.filter((x) => !was.includes(x)), kept = now.filter((x) => was.includes(x));
+  if (added.length) return `New place added: ${added.join(", ")}.` +
+    (kept.length ? ` Still remembered until it expires: ${kept.join(", ")}.` : "");
+  if (a[0].proven_at !== z[0].proven_at) return `Same place (${now.join(", ")}), proven again today.`;
+  return `Unchanged (${now.join(", ")}).`;
+}
+
+/* Build the list of feed items and the stage states for one cycle. */
+function describeCycle(cycle) {
+  const items = [];
+  const steps = cycle.start.steps;
+  const markers = steps.filter((s) => s.has_marker).flatMap((s) => [s.inject, s.inject.replaceAll("-", "")]);
+  const say = (who, ...what) => items.push({ who, what });
+  for (const s of steps) {
+    const where = s.host || s.target_ip || "unknown host";
+    say("Step", b(`${s.kind === "PREVENTION" ? "Prevention" : "Detection"} step fired on ${where}`),
+      el("div", { class: "d" }, s.has_marker ? ["Marker: ", code(s.inject)]
+        : ["No marker (network step). IPs: ", code(`${s.source_ip} → ${s.target_ip}`)]));
+  }
+  const before = memoryPlaces(cycle.start.memory);
+  say("Memory", before.length
+    ? ["Remembered from an earlier run: ",
+      ...[...new Set(before.map((p) => `${p.index} / ${p.sourcetype}`))].flatMap((t) => [code(t), " "])]
+    : "Nothing remembered for this test yet.");
+
+  const end = cycle.end || { results: [], searches: [], traces: [], deferred: 0, memory: cycle.start.memory };
+  let sent = 0, failure = null;
+  for (const e of cycle.items) {
+    if (e.type === "index_check") {
+      say("Splunk", e.ok ? ["Index check: ", code(e.index), " exists."] : [b("Index check failed: "), code(e.index), " was not found."]);
+      if (!e.ok) failure = "index missing";
+    } else if (e.type === "auth_failed") {
+      say("Splunk", b("Sign-in rejected (401).")); failure = "sign-in rejected";
+    } else if (e.type === "search") {
+      sent += 1;
+      say("Query writer", el("span", { class: "tag " + e.kind, text: e.kind }),
+        b(`${e.kind === "narrow" ? "Narrow" : "Wide"} search written`), " from template ", code(TEMPLATE[e.kind]), splBlock(e.spl));
+      say("Validator", b("Passed. "), el("span", { class: "d",
+        text: `Names an index, a sourcetype and a time window. Commands used: ${commandsOf(e.spl)}.` }));
+    } else if (e.type === "rows") {
+      say("Splunk", b(`Returned ${plural(e.rows.length, "row")}`), e.rows.length ? "" : el("span", { class: "d", text: " (nothing found there)" }),
+        ...e.rows.slice(0, 3).map((r) => rowView(r, markers)));
+    } else if (e.type === "dropped") {
+      say("Splunk", b("The connection dropped during the search.")); failure = "connection dropped";
+    } else if (e.type === "search_error") {
+      say("Splunk", b("Splunk reported an error: "), code(e.message)); failure = "search failed";
+    }
+  }
+  if (end.deferred) say("Collector", b(`${plural(end.deferred, "step")} not due yet.`),
+    el("span", { class: "d", text: " Its alerts have not had time to arrive, so it is not searched and gets no verdict." }));
+  const refused = end.results.find((r) => r.reason === "query_refused");
+  if (refused) say("Validator", b("Refused. Nothing was sent. "), el("span", { class: "d", text: refused.message || "" }));
+  for (const r of end.results) {
+    const step = steps.find((s) => s.id === r.id) || {};
+    const who = steps.length > 1 ? ` (${step.host || step.inject || ""})` : "";
+    if (r.outcome === "Detected") {
+      say("Matcher", b(`Alert tied to the step${who}. `), r.method === "step_marker"
+        ? ["Marker found in field ", code(r.field || "?"), "."] : "Matched on IPs and implant (older matching).",
+        r.path ? el("span", { class: "d", text: ` Found by the ${r.path} search.` }) : "");
+    } else if (r.outcome === "Missed") {
+      say("Matcher", b(`No alert could be tied to the step${who}: `), REASONS[r.reason] || r.reason, ".");
+    }
+    say("Outcome", el("span", { class: "chip " + OUTCOME_CLASS[r.outcome], text: r.outcome }),
+      r.outcome === "Could not check" ? el("span", { class: "d", text: ` ${REASONS[r.reason] || r.reason}.` }) : "",
+      el("div", { class: "d" }, r.verdict ? `Written to OpenAEV: ${r.verdict[0]}.`
+        : "Nothing written to OpenAEV. The expectation stays pending and is not scored as a miss."));
+  }
+  for (const name of end.traces || []) say("Evidence", "Trace attached: ", code(name));
+  if (end.results.length) say("Memory", memoryChange(cycle.start.memory, end.memory));
+
+  const outcomes = end.results.map((r) => r.outcome);
+  const all = (o) => outcomes.length && outcomes.every((x) => x === o);
+  const stages = [
+    ["Step fired", "done", plural(steps.length, "step")],
+    ["Search written", sent || refused ? "done" : "stop", sent ? plural(sent, "search") : refused ? "1 search" : "none"],
+    ["Validator", refused ? "none" : sent ? "done" : "stop", refused ? "refused" : sent ? "passed" : "not reached"],
+    ["Search sent", failure && failure !== "index missing" && sent ? "stop" : sent ? "done" : "stop",
+      failure && sent ? failure : sent ? (end.searches || []).join(" + ") : (failure || "not sent")],
+    ["Alert matched", all("Detected") ? "done" : outcomes.includes("Missed") ? "none" : "stop",
+      all("Detected") ? "yes" : outcomes.includes("Missed") ? "no" : "not checked"],
+    ["Outcome", all("Detected") ? "done" : outcomes.includes("Missed") ? "none" : "stop",
+      outcomes.length ? [...new Set(outcomes)].join(", ") : "no verdict yet"],
+  ];
+  return { items, stages, end };
+}
+
+/* ---------- arena ---------- */
+function stageRow(stages, upTo) {
+  return el("div", { class: "stages" }, stages.map(([label, cls, status], i) =>
+    el("div", { class: "stage " + (i < upTo ? cls : "") }, el("div", { class: "n", text: `Stage ${i + 1}` }),
+      el("div", { class: "l", text: label }), el("div", { class: "s", text: i < upTo ? status : "waiting" }))));
+}
+function feedItem(item) {
+  return el("li", {}, el("div", { class: "who", text: item.who }), el("div", { class: "what" }, item.what));
+}
+const STAGE_OF = { Step: 1, Memory: 1, "Query writer": 2, Validator: 3, Splunk: 4, Collector: 4, Matcher: 5, Outcome: 6, Evidence: 6 };
+
+async function playCycle(card, described, animate) {
+  const stagesHost = el("div"), feed = el("ul", { class: "feed" });
+  card.append(stagesHost, feed);
+  let reached = 0;
+  stagesHost.replaceChildren(stageRow(described.stages, animate ? 0 : 6));
+  for (const item of described.items) {
+    feed.append(feedItem(item));
+    if (animate) {
+      reached = Math.max(reached, STAGE_OF[item.who] || reached);
+      stagesHost.replaceChildren(stageRow(described.stages, reached));
+      await new Promise((r) => setTimeout(r, 260));
+    }
+  }
+  stagesHost.replaceChildren(stageRow(described.stages, 6));
+}
+
+function resultsCard(run, cycles) {
+  const facts = el("div", { class: "grid" });
+  const fact = (k, v, x) => facts.append(el("div", { class: "fact" }, el("div", { class: "k", text: k }),
+    el("div", { class: "v" }, v), x ? el("div", { class: "x" }, x) : null));
+  const names = cycles.length > 1 ? ["First run", "Repeat run"] : ["This run"];
+  cycles.forEach((c, i) => {
+    const results = c.end.results;
+    fact(`${names[i] || "Run " + (i + 1)}: outcome`, results.length
+      ? results.map((r) => el("span", { class: "chip " + OUTCOME_CLASS[r.outcome], text: r.outcome, style: "margin-right:4px" }))
+      : "No verdict yet",
+      results[0] && results[0].reason ? (REASONS[results[0].reason] || results[0].reason) : null);
+    const searches = c.end.searches || [];
+    fact(`${names[i] || "Run " + (i + 1)}: searches sent`, plural(searches.length, "search"),
+      searches.length ? el("div", { class: "dots", title: searches.join(", ") },
+        searches.map((k) => el("span", { class: "dot " + k })), searches.join(" + ")) : "none sent");
+  });
+  const lastHit = cycles.flatMap((c) => c.end.results).filter((r) => r.outcome === "Detected").pop();
+  if (lastHit) fact("How it was matched", lastHit.method === "step_marker" ? "Step marker" : "IPs + implant (older matching)",
+    lastHit.field ? ["in field ", code(lastHit.field)] : null);
+  if (cycles.length > 1) {
+    const [a, z] = [cycles[0].end.searches.length, cycles[cycles.length - 1].end.searches.length];
+    fact("Repeat run against first run", `${z} against ${a}`,
+      z < a ? "fewer searches on the repeat run" : z === a ? "same count; the repeat search is narrower" : "more searches on the repeat run");
+  }
+  const decisions = run.events.filter((e) => e.type === "validator" || e.type === "template");
+  if (decisions.length) fact("Decisions", `${decisions.filter((e) => e.refused).length} refused, ` +
+    `${decisions.filter((e) => !e.refused).length} accepted`, "each one is listed above");
+  const card = el("section", { class: "card" }, el("header", {}, el("h3", { text: "Results" }),
+    el("span", { class: "sub", text: `finished in ${run.seconds} s` })), el("div", { class: "body" }, facts));
+
+  const places = memoryPlaces(cycles.length ? cycles[cycles.length - 1].end.memory : {});
+  if (places.length) {
+    card.append(el("div", { class: "body", style: "padding-top:0" }, el("div", { class: "fact" },
+      el("div", { class: "k", text: "Location memory after the run" }),
+      el("div", { class: "tbl-wrap" }, el("table", {}, el("thead", {}, el("tr", {},
+        ["Test", "Index", "Sourcetype", "Field", "Rule", "Delay", "Proven"].map((h) => el("th", { text: h })))),
+        el("tbody", {}, places.map((p) => el("tr", {},
+          el("td", { class: "mono", text: p.key.replace("asset:", "").replace("|expectation:", " · ") }),
+          el("td", { class: "mono", text: p.index }), el("td", { class: "mono", text: p.sourcetype }),
+          el("td", { class: "mono", text: p.field || "–" }), el("td", { text: p.rule_name || "–" }),
+          el("td", { text: p.delay_seconds === null || p.delay_seconds === undefined ? "–" : `${p.delay_seconds} s` }),
+          el("td", { text: p.found_on || "–" })))))))));
+  }
+  card.append(el("div", { class: "check " + (run.ok ? "ok" : "no") },
+    b(run.ok ? "Check passed." : "Check failed."),
+    el("span", { text: run.ok ? "The harness compared this run with the expected result and they agree."
+      : "The run did not match the expected result: " + (run.fails || []).join("; ") })));
+  return card;
+}
+
+function listCard(title, rows) {
+  return el("section", { class: "card" }, el("header", {}, el("h3", { text: title })),
+    el("div", { class: "body tbl-wrap" }, el("table", {}, el("thead", {}, el("tr", {},
+      ["Case", "Decision", "Why"].map((h) => el("th", { text: h })))),
+      el("tbody", {}, rows.map((e) => el("tr", {}, el("td", {}, e.label, e.spl ? el("div", { class: "spl", text: e.spl }) : null),
+        el("td", {}, el("span", { class: "chip " + (e.refused ? "mis" : "det"), text: e.refused ? "Refused" : "Accepted" })),
+        el("td", { text: e.message || "Allowed commands only; index, sourcetype and time window named." })))))));
+}
+
+async function renderMain(animate) {
+  const main = $("main");
+  const test = testById(state.selected);
+  if (!test) return;
+  const run = state.runs[test.id];
+  const runButton = el("button", { class: "btn primary", disabled: state.busy || null, onclick: () => runTest(test.id),
+    text: state.busy ? "Running…" : run ? "Run again" : "Run test" });
+  main.replaceChildren(el("div", { class: "head" }, el("div", {}, el("h2", { text: test.title }), el("p", { text: test.blurb })), runButton));
+  if (!run) {
+    main.append(el("section", { class: "card" }, el("div", { class: "empty" },
+      state.busy ? "Running the real collector code against the mock Splunk…"
+        : "Run the test to watch the collector work through it: step fired, search written, validator, search sent, alert matched, outcome.")));
+    return;
+  }
+  if (run.error) { main.append(el("section", { class: "card" }, el("div", { class: "empty", text: run.error }))); return; }
+  const cycles = cyclesOf(run.events).filter((c) => c.end);
+  const names = cycles.length > 1 ? ["First run", "Repeat run (same test, new run)"] : ["Arena"];
+  const cards = cycles.map((c, i) => {
+    const card = el("section", { class: "card" }, el("header", {}, el("h3", { text: names[i] || `Run ${i + 1}` }),
+      el("span", { class: "sub", text: "real collector code, mock Splunk and mock OpenAEV" })));
+    main.append(card);
+    return [card, describeCycle(c)];
+  });
+  const validator = run.events.filter((e) => e.type === "validator");
+  const templates = run.events.filter((e) => e.type === "template");
+  const tail = () => {
+    if (validator.length) main.append(listCard("Validator decisions", validator));
+    if (templates.length) main.append(listCard("Template store decisions", templates));
+    main.append(resultsCard(run, cycles));
+    main.append(el("details", { class: "log" }, el("summary", { text: "Raw wire log of this run" }), el("pre", { text: run.log })));
+  };
+  if (!animate) { for (const [card, d] of cards) await playCycle(card, d, false); tail(); return; }
+  for (const [card, d] of cards) { await playCycle(card, d, true); if (state.selected !== test.id) return; }
+  tail();
+}
+
+/* ---------- running ---------- */
+async function post(id) {
+  const res = await fetch("/api/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "the run failed");
+  return data;
+}
+async function runTest(id) {
+  if (state.busy) return;
+  state.busy = true; delete state.runs[id]; $("runAll").disabled = true;
+  renderMain(false);
+  try {
+    const run = await post(id);
+    state.runs[id] = run; state.last[id] = run.last;
+  } catch (err) { state.runs[id] = { error: "Could not run the test: " + err.message }; }
+  state.busy = false; $("runAll").disabled = false;
+  renderSide();
+  renderMain(state.selected === id);   // replay only if this test is still on screen
+}
+async function runAll() {
+  if (state.busy) return;
+  state.busy = true;
+  const button = $("runAll"), tests = allTests();
+  button.disabled = true;
+  let passed = 0;
+  for (let i = 0; i < tests.length; i++) {
+    button.textContent = `Running ${i + 1} of ${tests.length}…`;
+    try {
+      const run = await post(tests[i].id);
+      state.runs[tests[i].id] = run; state.last[tests[i].id] = run.last;
+      if (run.ok) passed += 1;
+    } catch (err) { state.runs[tests[i].id] = { error: "Could not run the test: " + err.message }; }
+    renderSide();
+  }
+  state.busy = false; button.disabled = false;
+  button.textContent = `Run all tests (${passed} of ${tests.length} passed)`;
+  renderMain(false);
+}
+$("runAll").addEventListener("click", runAll);
+
+fetch("/api/catalogue").then((r) => r.json()).then((data) => {
+  state.groups = data.groups; state.last = data.last || {};
+  state.selected = "marker_match";
+  renderSide(); renderMain(false);
+}).catch(() => { $("main").replaceChildren(el("div", { class: "empty", text: "The demo runner is not answering." })); });
+</script>
+</body>
+</html>
