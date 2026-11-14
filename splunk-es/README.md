@@ -21,6 +21,9 @@ with the related injects to confirm whether the activity was detected.
     - [Manual Deployment](#manual-deployment)
   - [Usage](#usage)
   - [Behavior](#behavior)
+    - [Step matching](#step-matching)
+    - [Outcomes](#outcomes)
+    - [Mock harness](#mock-harness)
   - [Required permissions and API endpoints](#required-permissions-and-api-endpoints)
   - [Debugging](#debugging)
   - [Additional information](#additional-information)
@@ -78,6 +81,8 @@ The collector is configured either through environment variables (recommended, r
 | Offset         | `splunk_es.offset`         | `SPLUNKES_OFFSET`           | PT30S        | No        | Delay between retry attempts to absorb alert ingestion latency, as an ISO 8601 duration. |
 | Max Retry      | `splunk_es.max_retry`      | `SPLUNKES_MAX_RETRY`        | 3            | No        | Maximum number of retry attempts after the initial search returns no results.            |
 | Query Template | `splunk_es.query_template` | `SPLUNKES_QUERY_TEMPLATE`   | *(built-in)* | No        | Custom SPL query template with placeholders (leave empty to use the default below).      |
+| Match Window Before | `splunk_es.match_window_before` | `SPLUNKES_MATCH_WINDOW_BEFORE` | PT1M | No | Slack before the step's start date when tying an alert to a step (see [Step matching](#step-matching)). |
+| Match Window After  | `splunk_es.match_window_after`  | `SPLUNKES_MATCH_WINDOW_AFTER`  | PT5M | No | Slack after the step's end date when tying an alert to a step.                            |
 
 ### Query template
 
@@ -93,6 +98,7 @@ following placeholders, resolved at runtime:
 | `{implant_names}`      | Implant process names quoted for the Splunk `IN` operator (`*` if none).     |
 | `{start_date}`         | Start date from signatures, or a relative time fallback (e.g. `-3600s`).      |
 | `{end_date}`           | End date from signatures, or `now` fallback.                                  |
+| `{step_marker_clause}` | ` OR ("<inject id>" OR "<inject id without dashes>")`, or empty when the step has no marker. |
 | `{ip_conditions}`      | Legacy: auto-generated source + destination IP filter.                        |
 | `{process_conditions}` | Legacy: auto-generated URL path / process filter.                             |
 | `{time_window}`        | Legacy: computed earliest time in seconds.                                    |
@@ -100,8 +106,13 @@ following placeholders, resolved at runtime:
 The query must include `| table _time` for proper alert parsing. The default template is:
 
 ```spl
-index={alerts_index} (src_ip IN ({source_ips}) OR src IN ({source_ips}) OR source_ip IN ({source_ips}) OR client_ip IN ({source_ips})) (dst_ip IN ({target_ips}) OR dest IN ({target_ips}) OR dest_ip IN ({target_ips}) OR destination_ip IN ({target_ips}) OR server_ip IN ({target_ips})) (url_path IN ({implant_urls}) OR url IN ({implant_urls}) OR path IN ({implant_urls}) OR query IN ({implant_urls}) OR process_name IN ({implant_names}) OR parent_process_name IN ({implant_names})) earliest={start_date} latest={end_date} | table _time, src_ip, src, source_ip, client_ip, dst_ip, dest, dest_ip, destination_ip, server_ip, signature, rule_name, event_type, severity, url_path, url, path, query, process_name, parent_process_name, _raw | sort -_time
+index={alerts_index} (((src_ip IN ({source_ips}) OR src IN ({source_ips}) OR source_ip IN ({source_ips}) OR client_ip IN ({source_ips})) (dst_ip IN ({target_ips}) OR dest IN ({target_ips}) OR dest_ip IN ({target_ips}) OR destination_ip IN ({target_ips}) OR server_ip IN ({target_ips})) (url_path IN ({implant_urls}) OR url IN ({implant_urls}) OR path IN ({implant_urls}) OR query IN ({implant_urls}) OR process_name IN ({implant_names}) OR parent_process_name IN ({implant_names})))){step_marker_clause}) earliest={start_date} latest={end_date} | table _time, src_ip, src, source_ip, client_ip, dst_ip, dest, dest_ip, destination_ip, server_ip, signature, rule_name, event_type, severity, url_path, url, path, query, process_name, parent_process_name, process, command_line, CommandLine, parent_process, file_name, file_path, TargetFilename, dest_host, dest_nt_host, hostname, ComputerName, dvc, _raw | sort -_time
 ```
+
+The step-marker branch is OR-ed with the IP + implant filter, so an event that carries the marker is fetched even when it
+has no IP fields (for example an EDR process event). A custom template that leaves out `{step_marker_clause}` still
+works, but only fetches what its own filter returns; to use step-marker matching it must also `table` the fields listed
+under [Step matching](#step-matching).
 
 ## Deployment
 
@@ -153,7 +164,7 @@ flowchart LR
     E -->|poll unfilled expectations| C
     C -->|run SPL search over the window| A
     A -->|matching events| C
-    C -->|match on IPs + parent process| R
+    C -->|match on step marker + host + time window, IPs + implant as fallback| R
 ```
 
 On each run, the collector:
@@ -166,12 +177,66 @@ On each run, the collector:
 3. Runs a oneshot search job (`POST /services/search/jobs` with `exec_mode=oneshot`, `output_mode=json`).
 4. Retries up to `SPLUNKES_MAX_RETRY` times, waiting `SPLUNKES_OFFSET` between attempts and progressively widening the
    relative window, to absorb alert ingestion latency.
-5. Matches events against the expectation signatures: the `parent_process_name` signature must match and, when IP
-   signatures are present, at least one source or destination IP must match. Each matched DETECTION expectation is marked
-   `Detected` and gets an expectation trace linking to the Splunk ES search results.
+5. Ties each returned event to the step that caused it (see [Step matching](#step-matching)). Each matched DETECTION
+   expectation is marked `Detected` and gets an expectation trace linking to the Splunk ES search results.
+6. Gives every expectation one of four [outcomes](#outcomes). A properly checked expectation with no matching alert is
+   written back as `Not Detected`; one the collector could not check is left pending and never scored as a miss.
 
-Expectations that remain unmatched after all retries are left for OpenAEV to mark as failed (`Not Detected`) once they
-expire.
+### Step matching
+
+Each simulated test step (inject) is tied to the alerts it caused by three checks, applied to every returned event:
+
+1. **Time window.** The event's `_time` must fall between the step's `start_date` minus `SPLUNKES_MATCH_WINDOW_BEFORE`
+   and its `end_date` plus `SPLUNKES_MATCH_WINDOW_AFTER`. Skipped when the step has no dates or the event time cannot
+   be read. The default query still searches `start_date`..`end_date` only, so the "after" slack takes effect with a
+   custom template that searches a wider range.
+2. **Host.** When the step carries a `target_hostname_address` signature and the event names a host (`dest_host`,
+   `dest_nt_host`, `hostname`, `ComputerName`, `Computer`, `orig_host`, `dvc_host`, `device_hostname`, `dvc`, or a
+   non-IP `dest`), the short host names must agree. Splunk's own `host` field is not used: on notable events it is the
+   search head, not the endpoint. When either side has no host name, a marker match falls back to comparing IPs.
+3. **Step marker.** The marker is the inject ID, which the collector reads from the implant name
+   (`oaev-implant-{inject}-agent-{agent}`). An event carrying it, with or without dashes, in a command line or process
+   field (`process`, `command_line`, `CommandLine`, `cmdline`, `process_command_line`, `process_name`, `parent_process`,
+   `parent_process_name`, `ParentCommandLine`, `Image`), a file field (`file_name`, `file_path`, `TargetFilename`,
+   `object`, `object_path`) or a looked-up hostname (`query`, `dns_query`, `QueryName`, `url_domain`) is tied to that
+   step. A benign simulation can embed it itself, for example `echo oaev-step-{inject id}`.
+
+The earlier matching is kept as the fallback: IPs plus the implant parent process rebuilt from the implant callback URL
+(`url_path`). One thing changed in it: when a step has a marker, an event must carry either the marker or the implant
+URL. An event that shares only the step's IPs no longer counts for that step. Steps with IP signatures only
+(network / agentless injects) have no marker and still match on IPs alone, so a stale alert with the same IP pair can
+still satisfy them.
+
+### Outcomes
+
+| Outcome | Meaning | Written to OpenAEV |
+|---|---|---|
+| `Detected` | An alert was tied to the step (`match_method` = `step_marker` or `legacy`). | `Detected`, success, plus a trace |
+| `Prevented` | The tool blocked the step. Part of the shared outcome model; Splunk ES is detection-only and never returns it. | - |
+| `Missed` | Splunk was searched properly and no alert could be tied to the step. Reason: `no_alerts`, `no_matching_alert`, `marker_absent`, `wrong_host` or `outside_time_window`. | `Not Detected`, failure |
+| `Could not check` | The collector never got a trustworthy answer. Reason: `splunk_auth_failed`, `splunk_unreachable`, `index_missing`, `splunk_search_failed`, `prevention_not_supported` or `collector_error`. | Nothing; the expectation stays pending |
+
+`Could not check` covers a Splunk connection or authentication failure, a missing or unreadable alerts index (checked
+with `GET /services/data/indexes/{index}` before searching; skipped for wildcard or multi-index values), a search that
+returns no rows together with an `ERROR` message, and a PREVENTION expectation sent to this detection-only source. The
+outcome, its reason and the match method are logged per expectation and counted in the run summary.
+
+OpenAEV has no third state for an expectation result, so `Could not check` is recorded by not writing a verdict. If the
+cause is not fixed before the expectation expires, OpenAEV itself will still mark it as failed; the collector log is
+the record of what really happened.
+
+### Mock harness
+
+`harness/mock_e2e_harness.py` runs the real collector code against a mock Splunk and a mock OpenAEV in one process. No
+Splunk, OpenAEV or Docker is needed:
+
+```shell
+python harness/mock_e2e_harness.py all            # every scenario, pass/fail table
+python harness/mock_e2e_harness.py marker_match   # one scenario with the full wire trace
+```
+
+It covers the marker match (command line, file name, DNS query), marker absent, time window miss, wrong host, the
+legacy fallbacks and each `Could not check` cause, and exits non-zero when a scenario's outcome is not the expected one.
 
 ## Required permissions and API endpoints
 
@@ -179,6 +244,7 @@ expire.
   (e.g. `main`).
 - API endpoints used:
   - `POST /services/search/jobs` (oneshot search via the Splunk REST API, authenticated with HTTP basic authentication)
+  - `GET /services/data/indexes/{index}` (checks that the alerts index exists before an empty search is trusted)
 - Reference: [Splunk roles and capabilities](https://docs.splunk.com/Documentation/Splunk/latest/Security/Aboutusersandroles)
   and the [Splunk REST API reference](https://docs.splunk.com/Documentation/Splunk/latest/RESTREF/RESTsearch)
 

@@ -20,7 +20,7 @@ from .exception import (
     ExpectationUpdateError,
 )
 from .expectation_handler import GenericExpectationHandler
-from .models import ExpectationResult, ProcessingSummary
+from .models import ExpectationResult, Outcome, ProcessingSummary
 from .trace_manager import TraceManager
 from .trace_service_provider import TraceServiceProvider
 
@@ -143,11 +143,22 @@ class GenericExpectationManager:
             valid_count = sum(1 for r in results if r.is_valid)
             invalid_count = len(results) - valid_count
 
+            outcome_counts: dict[str, int] = {}
+            for r in results:
+                outcome = r.outcome.value if r.outcome else "Unknown"
+                outcome_counts[outcome] = outcome_counts.get(outcome, 0) + 1
+                self.logger.info(
+                    f"{LOG_PREFIX} Expectation {r.expectation_id}: outcome="
+                    f"'{outcome}' reason={r.outcome_reason} "
+                    f"match_method={r.match_method}"
+                )
+
             summary = ProcessingSummary(
                 processed=len(results),
                 valid=valid_count,
                 invalid=invalid_count,
                 skipped=skipped_count,
+                outcomes=outcome_counts,
             )
 
             self.logger.info(
@@ -237,12 +248,15 @@ class GenericExpectationManager:
                     )
                     continue
 
-                if getattr(result, "skip_verdict", False):
+                if getattr(result, "skip_verdict", False) or (
+                    result.outcome == Outcome.COULD_NOT_CHECK
+                ):
                     skipped_count += 1
                     self.logger.warning(
-                        f"{LOG_PREFIX} Not writing a verdict for expectation "
-                        f"{expectation_id} (skip_verdict set): {result.error_message}. "
-                        f"Leaving it pending for retry / another collector."
+                        f"{LOG_PREFIX} Could not check expectation {expectation_id} "
+                        f"(reason={result.outcome_reason}): {result.error_message}. "
+                        f"No verdict written; leaving it pending for retry / "
+                        f"another collector."
                     )
                     continue
 

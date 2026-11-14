@@ -12,7 +12,7 @@ from pyoaev.signatures.types import SignatureTypes  # type: ignore[import-untype
 
 from .exception import ExpectationHandlerError
 from .expectation_service_provider import ExpectationServiceProvider
-from .models import ExpectationResult
+from .models import CouldNotCheckReason, ExpectationResult, Outcome
 from .signature_registry import ExpectationHandlerType, get_registry
 
 LOG_PREFIX = "[CollectorExpectationHandler]"
@@ -125,6 +125,8 @@ class GenericExpectationHandler:
                     is_valid=False,
                     expectation=expectation,
                     error_message="Unsupported expectation type",
+                    outcome=Outcome.COULD_NOT_CHECK,
+                    outcome_reason=CouldNotCheckReason.COLLECTOR_ERROR.value,
                 )
 
             return result

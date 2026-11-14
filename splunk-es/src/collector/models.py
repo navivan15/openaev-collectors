@@ -1,8 +1,36 @@
 """Pydantic models for collector data structures."""
 
+from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+class Outcome(str, Enum):
+    """The four outcomes a collector can reach for one expectation.
+
+    * DETECTED / PREVENTED - the security tool saw / blocked the step.
+    * MISSED - the tool was checked properly and has no matching alert.
+    * COULD_NOT_CHECK - the collector never got a trustworthy answer
+      (connection or auth failure, missing index, search error, or an
+      expectation type this source cannot judge). Never scored as a miss.
+    """
+
+    DETECTED = "Detected"
+    PREVENTED = "Prevented"
+    MISSED = "Missed"
+    COULD_NOT_CHECK = "Could not check"
+
+
+class CouldNotCheckReason(str, Enum):
+    """Why an expectation came out as Could not check."""
+
+    SPLUNK_AUTH_FAILED = "splunk_auth_failed"
+    SPLUNK_UNREACHABLE = "splunk_unreachable"
+    INDEX_MISSING = "index_missing"
+    SPLUNK_SEARCH_FAILED = "splunk_search_failed"
+    PREVENTION_NOT_SUPPORTED = "prevention_not_supported"
+    COLLECTOR_ERROR = "collector_error"
 
 
 class ExpectationTrace(BaseModel):
@@ -163,6 +191,44 @@ class ExpectationResult(BaseModel):
     processing_time: float | None = Field(
         None, description="Time taken to process this expectation in seconds"
     )
+    outcome: Outcome | None = Field(
+        None,
+        description=(
+            "One of Detected / Prevented / Missed / Could not check. Filled in "
+            "from is_valid / skip_verdict when not set explicitly."
+        ),
+    )
+    outcome_reason: str | None = Field(
+        None,
+        description="Machine-readable reason (a CouldNotCheckReason value, or "
+        "a short miss reason such as 'no_alerts').",
+    )
+    match_method: str | None = Field(
+        None,
+        description="How the alert was tied to the step: 'step_marker' or "
+        "'legacy' (IPs + implant parent process).",
+    )
+
+    @model_validator(mode="after")
+    def _fill_outcome(self) -> "ExpectationResult":
+        """Keep outcome, is_valid and skip_verdict consistent."""
+        if self.outcome is None:
+            if self.skip_verdict:
+                self.outcome = Outcome.COULD_NOT_CHECK
+            elif self.is_valid:
+                kind = type(self.expectation).__name__ if self.expectation else ""
+                self.outcome = (
+                    Outcome.PREVENTED
+                    if kind == "PreventionExpectation"
+                    else Outcome.DETECTED
+                )
+            else:
+                self.outcome = Outcome.MISSED
+        if self.outcome == Outcome.COULD_NOT_CHECK:
+            # Could not check must never be written back as a verdict.
+            self.skip_verdict = True
+            self.is_valid = False
+        return self
 
 
 class ProcessingSummary(BaseModel):
@@ -172,6 +238,10 @@ class ProcessingSummary(BaseModel):
     valid: int = Field(..., description="Number of valid expectations")
     invalid: int = Field(..., description="Number of invalid expectations")
     skipped: int = Field(..., description="Number of skipped expectations")
+    outcomes: dict[str, int] = Field(
+        default_factory=dict,
+        description="Count per outcome (Detected / Prevented / Missed / Could not check)",
+    )
     total_processing_time: float | None = Field(
         None, description="Total processing time in seconds"
     )

@@ -5,6 +5,7 @@ import string
 import time
 from datetime import timedelta
 from typing import Any
+from urllib.parse import quote
 
 import requests  # type: ignore[import-untyped]
 from requests.exceptions import (  # type: ignore[import-untyped]
@@ -17,12 +18,15 @@ from ..models.configs.config_loader import ConfigLoader
 from .exception import (
     SplunkESAPIError,
     SplunkESAuthenticationError,
+    SplunkESIndexNotFoundError,
     SplunkESNetworkError,
     SplunkESQueryError,
+    SplunkESServiceError,
     SplunkESSessionError,
     SplunkESValidationError,
 )
 from .models import SplunkESAlert, SplunkESResponse, SplunkESSearchCriteria
+from .step_matching import markers_from_parent_process
 from .utils.parent_process_parser import ParentProcessParser
 
 LOG_PREFIX = "[SplunkESClientAPI]"
@@ -31,19 +35,30 @@ LOG_PREFIX = "[SplunkESClientAPI]"
 DEFAULT_TIME_WINDOW_HOURS = 1
 REQUEST_TIMEOUT_SECONDS = 30
 MAX_RETRIES = 3
+# How long a successful "the alerts index exists" check is trusted.
+INDEX_CHECK_TTL_SECONDS = 300
 
+# The IP + implant branch is the original (legacy) filter. {step_marker_clause}
+# adds an OR branch that fetches any event carrying the step marker (the inject
+# ID) even when it has no IP fields - e.g. an EDR process event. It renders to
+# an empty string when the step has no marker, leaving the legacy filter as is.
 DEFAULT_QUERY_TEMPLATE = (
     "index={alerts_index} "
+    "((("
     "(src_ip IN ({source_ips}) OR src IN ({source_ips}) OR source_ip IN ({source_ips}) OR client_ip IN ({source_ips})) "
     "(dst_ip IN ({target_ips}) OR dest IN ({target_ips}) OR dest_ip IN ({target_ips}) "
     "OR destination_ip IN ({target_ips}) OR server_ip IN ({target_ips})) "
     "(url_path IN ({implant_urls}) OR url IN ({implant_urls}) OR path IN ({implant_urls}) "
     "OR query IN ({implant_urls}) OR process_name IN ({implant_names}) "
-    "OR parent_process_name IN ({implant_names})) "
+    "OR parent_process_name IN ({implant_names}))"
+    ")){step_marker_clause}) "
     "earliest={start_date} latest={end_date} "
     "| table _time, src_ip, src, source_ip, client_ip, dst_ip, dest, dest_ip, "
     "destination_ip, server_ip, signature, rule_name, event_type, severity, "
-    "url_path, url, path, query, process_name, parent_process_name, _raw | sort -_time"
+    "url_path, url, path, query, process_name, parent_process_name, "
+    "process, command_line, CommandLine, parent_process, file_name, file_path, "
+    "TargetFilename, dest_host, dest_nt_host, hostname, ComputerName, dvc, "
+    "_raw | sort -_time"
 )
 
 ALLOWED_PLACEHOLDERS = {
@@ -57,6 +72,7 @@ ALLOWED_PLACEHOLDERS = {
     "time_window",
     "start_date",
     "end_date",
+    "step_marker_clause",
 }
 
 
@@ -144,6 +160,8 @@ class SplunkESClientAPI:
         except Exception as e:
             raise SplunkESSessionError(f"Failed to create HTTP session: {e}") from e
 
+        self._index_checked_at: float | None = None
+
         self.logger.info(f"{LOG_PREFIX} Splunk ES API client initialized successfully")
 
     def _validate_template_placeholders(self, template: str) -> None:
@@ -220,6 +238,59 @@ class SplunkESClientAPI:
         except Exception as e:
             raise SplunkESSessionError(f"Failed to configure session: {e}") from e
 
+    def ensure_index_available(self) -> None:
+        """Check that the alerts index exists before trusting an empty search.
+
+        A search against a missing (or unreadable) index returns zero rows,
+        which would otherwise be scored as a missed detection. Wildcard or
+        multi-index values are not checked. A positive answer is cached for
+        INDEX_CHECK_TTL_SECONDS.
+
+        Raises:
+            SplunkESIndexNotFoundError: Index missing / not visible (HTTP 404).
+            SplunkESAuthenticationError: Credentials rejected (HTTP 401).
+            SplunkESNetworkError: Splunk unreachable.
+
+        """
+        index = (self.alerts_index or "").strip()
+        if not index or any(c in index for c in '*, ()="'):
+            return
+        now = time.monotonic()
+        if (
+            self._index_checked_at is not None
+            and now - self._index_checked_at < INDEX_CHECK_TTL_SECONDS
+        ):
+            return
+
+        url = f"{self.base_url}/services/data/indexes/{quote(index, safe='')}"
+        try:
+            response = self.session.get(
+                url, params={"output_mode": "json"}, timeout=REQUEST_TIMEOUT_SECONDS
+            )
+        except (ConnectionError, Timeout) as e:
+            raise SplunkESNetworkError(
+                f"Splunk unreachable while checking index '{index}': {e}"
+            ) from e
+        except RequestException as e:
+            raise SplunkESAPIError(
+                f"HTTP error while checking index '{index}': {e}"
+            ) from e
+
+        if response.status_code == 401:
+            raise SplunkESAuthenticationError("Authentication with Splunk ES failed")
+        if response.status_code == 404:
+            raise SplunkESIndexNotFoundError(
+                f"Splunk index '{index}' does not exist or this account cannot read it"
+            )
+        if response.status_code == 200:
+            self._index_checked_at = now
+            return
+        # 403 and others: we cannot verify, so let the search itself decide.
+        self.logger.warning(
+            f"{LOG_PREFIX} Could not verify index '{index}' "
+            f"(HTTP {response.status_code}); continuing with the search"
+        )
+
     def fetch_signatures(
         self, search_signatures: list[dict[str, Any]], expectation_type: str
     ) -> list[SplunkESAlert]:
@@ -251,6 +322,8 @@ class SplunkESClientAPI:
 
             search_criteria = self._build_search_criteria(search_signatures)
 
+            self.ensure_index_available()
+
             self.logger.debug(f"{LOG_PREFIX} Executing Splunk ES query with retry...")
             alerts = self._execute_splunk_query_with_retry(search_criteria)
 
@@ -259,7 +332,7 @@ class SplunkESClientAPI:
             )
             return alerts
 
-        except (SplunkESValidationError, SplunkESAPIError, SplunkESAuthenticationError):
+        except SplunkESServiceError:
             raise
         except (ConnectionError, Timeout) as e:
             raise SplunkESNetworkError(f"Network error during fetch: {e}") from e
@@ -391,6 +464,18 @@ class SplunkESClientAPI:
                 )
 
             response_data = response.json()
+            search_errors = [
+                str(m.get("text", ""))
+                for m in (response_data.get("messages") or [])
+                if isinstance(m, dict)
+                and str(m.get("type", "")).upper() in ("ERROR", "FATAL")
+            ]
+            if search_errors and not response_data.get("results"):
+                # No rows AND Splunk says the search failed: an empty answer
+                # here is not evidence of a miss.
+                raise SplunkESQueryError(
+                    f"Splunk search reported errors: {'; '.join(search_errors)}"
+                )
             splunk_response = SplunkESResponse.from_raw_response(response_data)
 
             self.logger.info(
@@ -542,6 +627,8 @@ class SplunkESClientAPI:
 
             search_criteria = self._build_search_criteria(search_signatures)
 
+            self.ensure_index_available()
+
             last_exception = None
 
             for attempt in range(max_retries + 1):
@@ -596,7 +683,7 @@ class SplunkESClientAPI:
                 )
                 return []
 
-        except (SplunkESValidationError, SplunkESAPIError, SplunkESAuthenticationError):
+        except SplunkESServiceError:
             raise
         except (ConnectionError, Timeout) as e:
             raise SplunkESNetworkError(f"Network error during fetch: {e}") from e
@@ -635,6 +722,9 @@ class SplunkESClientAPI:
             implant_names_str = self._build_implant_name_list(
                 search_criteria.parent_process_names or []
             )
+            step_marker_clause = self._build_step_marker_clause(
+                search_criteria.parent_process_names or []
+            )
             time_window_seconds = int(self.time_window.total_seconds())
             earliest_seconds = time_window_seconds + extend_end_seconds
 
@@ -665,6 +755,7 @@ class SplunkESClientAPI:
                 time_window=earliest_seconds,
                 start_date=start_date_str,
                 end_date=end_date_str,
+                step_marker_clause=step_marker_clause,
             )
 
             # Normalize whitespace: collapse runs of spaces caused by empty placeholders.
@@ -739,6 +830,21 @@ class SplunkESClientAPI:
         if url_path_conditions:
             return f"({' OR '.join(url_path_conditions)})"
         return ""
+
+    @staticmethod
+    def _build_step_marker_clause(parent_process_names: list[str]) -> str:
+        """Build the ``OR ("<marker>" ...)`` branch for the step marker.
+
+        Markers are inject IDs (hex and dashes only), so quoting is safe.
+
+        Returns:
+            ``' OR ("m1" OR "m2")'`` or an empty string when the step has no marker.
+
+        """
+        markers = markers_from_parent_process(parent_process_names)
+        if not markers:
+            return ""
+        return " OR (" + " OR ".join(f'"{m}"' for m in markers) + ")"
 
     @staticmethod
     def _build_ip_list(ips: list[str]) -> str:

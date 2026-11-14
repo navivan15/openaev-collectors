@@ -43,7 +43,10 @@ class SplunkESNoAlertsFoundError(SplunkESServiceError):
 class SplunkESNoMatchingAlertsError(SplunkESServiceError):
     """Raised when alerts are found but none match the expectation."""
 
-    pass
+    def __init__(self, *args: object, reason: str = "no_matching_alert") -> None:
+        """Keep a machine-readable miss reason next to the message."""
+        super().__init__(*args)
+        self.reason = reason
 
 
 class SplunkESDataConversionError(SplunkESServiceError):
@@ -90,5 +93,11 @@ class SplunkESTimeoutError(SplunkESServiceError):
 
 class SplunkESAuthenticationError(SplunkESServiceError):
     """Raised when authentication fails."""
+
+    pass
+
+
+class SplunkESIndexNotFoundError(SplunkESServiceError):
+    """Raised when the configured alerts index does not exist or is not readable."""
 
     pass

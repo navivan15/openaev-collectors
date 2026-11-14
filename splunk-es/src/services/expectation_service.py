@@ -16,22 +16,26 @@ from pyoaev.apis.inject_expectation.model import (  # type: ignore[import-untype
 from pyoaev.helpers import OpenAEVDetectionHelper  # type: ignore[import-untyped]
 from pyoaev.signatures.types import SignatureTypes  # type: ignore[import-untyped]
 
-from ..collector.models import ExpectationResult
+from ..collector.models import CouldNotCheckReason, ExpectationResult, Outcome
 from ..models.configs.config_loader import ConfigLoader
 from .client_api import SplunkESClientAPI
 from .converter import Converter
 from .exception import (
     SplunkESAPIError,
+    SplunkESAuthenticationError,
     SplunkESConfigurationError,
     SplunkESDataConversionError,
     SplunkESExpectationError,
+    SplunkESIndexNotFoundError,
     SplunkESMatchingError,
     SplunkESNetworkError,
     SplunkESNoAlertsFoundError,
     SplunkESNoMatchingAlertsError,
+    SplunkESQueryError,
     SplunkESServiceError,
     SplunkESValidationError,
 )
+from .step_matching import StepContext
 
 LOG_PREFIX = "[SplunkESExpectationService]"
 
@@ -103,6 +107,16 @@ class SplunkESExpectationService:
             self.logger.warning(
                 f"{LOG_PREFIX} No time_window configured, using default 1 hour"
             )
+
+        splunk_cfg = getattr(config, "splunk_es", None)
+        before = getattr(splunk_cfg, "match_window_before", None)
+        after = getattr(splunk_cfg, "match_window_after", None)
+        self.match_window_before = (
+            before if isinstance(before, timedelta) else timedelta(minutes=1)
+        )
+        self.match_window_after = (
+            after if isinstance(after, timedelta) else timedelta(minutes=5)
+        )
 
         if hasattr(config, "splunk_es"):
             self.max_retry = getattr(config.splunk_es, "max_retry", 3)
@@ -250,6 +264,8 @@ class SplunkESExpectationService:
                 expectation=expectation,
                 error_message="Splunk ES only supports DetectionExpectations, not PreventionExpectations",
                 skip_verdict=True,
+                outcome=Outcome.COULD_NOT_CHECK,
+                outcome_reason=CouldNotCheckReason.PREVENTION_NOT_SUPPORTED.value,
             )
         else:
             self.logger.error(
@@ -307,6 +323,8 @@ class SplunkESExpectationService:
             expectation=expectation,
             error_message="Splunk ES only supports DetectionExpectations, not PreventionExpectations",
             skip_verdict=True,
+            outcome=Outcome.COULD_NOT_CHECK,
+            outcome_reason=CouldNotCheckReason.PREVENTION_NOT_SUPPORTED.value,
         )
 
     def _handle_expectation(
@@ -365,8 +383,13 @@ class SplunkESExpectationService:
             self.logger.debug(
                 f"{LOG_PREFIX} Matching data against expectation signatures..."
             )
+            step_context = self._build_step_context(expectation)
             result = self._match(
-                oaev_data, matching_signatures, detection_helper, expectation_type
+                oaev_data,
+                matching_signatures,
+                detection_helper,
+                expectation_type,
+                step_context=step_context,
             )
 
             return result
@@ -436,20 +459,45 @@ class SplunkESExpectationService:
                 f"Failed to extract signatures from expectation: {e}"
             ) from e
 
+    def _build_step_context(self, expectation: DetectionExpectation) -> StepContext:
+        """Collect marker, host and time window for the step behind an expectation."""
+        signatures = []
+        for sig in getattr(expectation, "inject_expectation_signatures", []) or []:
+            sig_type = getattr(sig.type, "value", sig.type)
+            signatures.append({"type": str(sig_type), "value": str(sig.value)})
+        return StepContext.from_signatures(
+            signatures, self.match_window_before, self.match_window_after
+        )
+
     def _match(
         self,
         oaev_data: list[dict[str, Any]],
         matching_signatures: list[dict[str, str]],
         detection_helper: OpenAEVDetectionHelper,
         expectation_type: str,
+        step_context: StepContext | None = None,
     ) -> dict[str, Any]:
         """Match OAEV data against expectation signatures.
+
+        Per alert, in order:
+
+        1. Time window - an alert stamped outside the step's window (with
+           slack) cannot have been caused by it.
+        2. Host - when both the step and the alert name a host, they must
+           agree (falls back to IPs when no hostname is available).
+        3. Step marker - an alert carrying the step's marker (inject ID) in a
+           command line, file name or hostname field is tied to this step.
+        4. Legacy fallback - IPs + implant parent process (from the implant
+           callback URL). When the step has a marker, the implant identity is
+           required: an IP-only coincidence no longer counts for it.
 
         Args:
             oaev_data: List of OAEV formatted data.
             matching_signatures: Signatures to match against.
             detection_helper: OpenAEV detection helper.
             expectation_type: Type of expectation ('detection').
+            step_context: Marker / host / time window for the step. None keeps
+                the legacy behaviour exactly.
 
         Returns:
             Result dictionary with match status and matching data.
@@ -469,11 +517,59 @@ class SplunkESExpectationService:
                 f"{LOG_PREFIX} Attempting to match {len(oaev_data)} data items against {len(matching_signatures)} signatures"
             )
 
+            ctx = step_context or StepContext()
+            rejections: list[str] = []
+
             for i, data_item in enumerate(oaev_data):
                 self.logger.debug(f"{i} data_item: {data_item}")
                 self.logger.debug(
                     f"{LOG_PREFIX} Matching data item {i + 1}/{len(oaev_data)}"
                 )
+
+                if ctx.in_time_window(data_item) is False:
+                    self.logger.debug(
+                        f"{LOG_PREFIX} Data item {i + 1} is outside the step time window"
+                    )
+                    rejections.append("outside_time_window")
+                    continue
+
+                if ctx.hostname_check(data_item) is False:
+                    self.logger.debug(
+                        f"{LOG_PREFIX} Data item {i + 1} names a different host"
+                    )
+                    rejections.append("wrong_host")
+                    continue
+
+                marker_field = ctx.marker_found(data_item)
+                if marker_field:
+                    if ctx.host_check(data_item) is False:
+                        self.logger.debug(
+                            f"{LOG_PREFIX} Data item {i + 1} carries the step marker "
+                            f"but its IPs belong to another host"
+                        )
+                        rejections.append("wrong_host")
+                        continue
+                    self.logger.info(
+                        f"{LOG_PREFIX} Step marker match for {expectation_type} "
+                        f"expectation (field '{marker_field}')"
+                    )
+                    return {
+                        "is_valid": True,
+                        "matching_data": [data_item],
+                        "total_data_found": len(oaev_data),
+                        "match_method": "step_marker",
+                    }
+
+                if ctx.markers and "parent_process_name" not in data_item:
+                    # The step has a marker but this alert carries neither the
+                    # marker nor the implant identity: it cannot be tied to
+                    # this step (e.g. a stale alert sharing only the IPs).
+                    self.logger.debug(
+                        f"{LOG_PREFIX} Data item {i + 1} has no step marker or "
+                        f"implant identity - not tied to this step"
+                    )
+                    rejections.append("marker_absent")
+                    continue
 
                 available_signatures = [
                     sig for sig in matching_signatures if sig["type"] in data_item
@@ -508,6 +604,7 @@ class SplunkESExpectationService:
                                 "is_valid": True,
                                 "matching_data": [data_item],
                                 "total_data_found": len(oaev_data),
+                                "match_method": "legacy",
                             }
 
                             return result
@@ -515,6 +612,7 @@ class SplunkESExpectationService:
                             self.logger.debug(
                                 f"{LOG_PREFIX} No match for data item {i + 1}"
                             )
+                            rejections.append("no_matching_alert")
                             continue
                     except Exception as e:
                         self.logger.error(
@@ -526,10 +624,16 @@ class SplunkESExpectationService:
                         f"{LOG_PREFIX} Data item {i + 1} has no available signatures to match against"
                     )
 
+            reason = "no_matching_alert"
+            for candidate in ("wrong_host", "outside_time_window", "marker_absent"):
+                if candidate in rejections:
+                    reason = candidate
+                    break
             self.logger.info(
-                f"{LOG_PREFIX} No matching alerts found after checking {len(oaev_data)} data items"
+                f"{LOG_PREFIX} No matching alerts found after checking "
+                f"{len(oaev_data)} data items (reason={reason})"
             )
-            raise SplunkESNoMatchingAlertsError()
+            raise SplunkESNoMatchingAlertsError(reason=reason)
 
         except (
             SplunkESServiceError,
@@ -750,20 +854,55 @@ class SplunkESExpectationService:
         genuine_negative = isinstance(
             error, (SplunkESNoAlertsFoundError, SplunkESNoMatchingAlertsError)
         )
-        if not genuine_negative:
-            self.logger.error(
-                f"{LOG_PREFIX} Infrastructure error for expectation {expectation_id} "
-                f"({error.__class__.__name__}) - leaving expectation pending instead "
-                f"of scoring it 'Not Detected': {error_message}"
+        if genuine_negative:
+            reason = (
+                getattr(error, "reason", None)
+                if isinstance(error, SplunkESNoMatchingAlertsError)
+                else "no_alerts"
+            )
+            return ExpectationResult(
+                expectation_id=expectation_id,
+                is_valid=False,
+                expectation=expectation,
+                error_message=error_message,
+                skip_verdict=False,
+                outcome=Outcome.MISSED,
+                outcome_reason=reason,
             )
 
+        reason = self._could_not_check_reason(error)
+        self.logger.error(
+            f"{LOG_PREFIX} Could not check expectation {expectation_id} "
+            f"({error.__class__.__name__}, reason={reason.value}) - leaving it "
+            f"pending instead of scoring it 'Not Detected': {error_message}"
+        )
         return ExpectationResult(
             expectation_id=expectation_id,
             is_valid=False,
             expectation=expectation,
             error_message=error_message,
-            skip_verdict=not genuine_negative,
+            skip_verdict=True,
+            outcome=Outcome.COULD_NOT_CHECK,
+            outcome_reason=reason.value,
         )
+
+    @staticmethod
+    def _could_not_check_reason(error: BaseException) -> CouldNotCheckReason:
+        """Classify an infrastructure error, following the exception chain."""
+        chain: list[BaseException] = []
+        current: BaseException | None = error
+        while current is not None and current not in chain:
+            chain.append(current)
+            current = current.__cause__ or current.__context__
+        if any(isinstance(e, SplunkESAuthenticationError) for e in chain):
+            return CouldNotCheckReason.SPLUNK_AUTH_FAILED
+        if any(isinstance(e, SplunkESIndexNotFoundError) for e in chain):
+            return CouldNotCheckReason.INDEX_MISSING
+        if any(isinstance(e, SplunkESNetworkError) for e in chain):
+            return CouldNotCheckReason.SPLUNK_UNREACHABLE
+        if any(isinstance(e, (SplunkESAPIError, SplunkESQueryError)) for e in chain):
+            return CouldNotCheckReason.SPLUNK_SEARCH_FAILED
+        return CouldNotCheckReason.COLLECTOR_ERROR
 
     def _convert_dict_to_result(
         self,
@@ -786,6 +925,7 @@ class SplunkESExpectationService:
             expectation=expectation,
             matched_alerts=result_dict.get("matching_data"),
             error_message=result_dict.get("error"),
+            match_method=result_dict.get("match_method"),
         )
 
     def get_service_info(self) -> dict[str, Any]:

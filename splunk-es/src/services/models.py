@@ -43,6 +43,11 @@ class SplunkESAlert(BaseModel):
     )
     event_type: Optional[str] = Field(None, description="Type of security event")
     severity: Optional[str] = Field(None, description="Alert severity level")
+    raw: dict[str, Any] = Field(
+        default_factory=dict,
+        exclude=True,
+        description="The full Splunk result row (used for step matching)",
+    )
     _raw: Optional[dict[str, Any]] = PrivateAttr(default=None)
 
     @field_validator("src_ip", mode="before")
@@ -132,6 +137,7 @@ class SplunkESResponse(BaseModel):
                 rule_name=raw_result.get("rule_name"),
                 event_type=raw_result.get("event_type"),
                 severity=raw_result.get("severity"),
+                raw=raw_result if isinstance(raw_result, dict) else {},
                 _raw=raw_result,
             )
             alerts.append(alert)

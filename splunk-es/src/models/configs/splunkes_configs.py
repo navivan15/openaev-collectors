@@ -65,6 +65,18 @@ class _ConfigLoaderSplunkES(ConfigBaseSettings):
         default=timedelta(seconds=30),
         description="Time offset between retry attempts.",
     )
+    match_window_before: timedelta = Field(
+        alias="SPLUNKES_MATCH_WINDOW_BEFORE",
+        default=timedelta(minutes=1),
+        description="Slack before the step's start_date when tying an alert to a "
+        "step (absorbs clock skew between agent and Splunk).",
+    )
+    match_window_after: timedelta = Field(
+        alias="SPLUNKES_MATCH_WINDOW_AFTER",
+        default=timedelta(minutes=5),
+        description="Slack after the step's end_date when tying an alert to a "
+        "step (correlation searches often stamp alerts a few minutes later).",
+    )
     query_template: Optional[str] = Field(
         alias="SPLUNKES_QUERY_TEMPLATE",
         default=None,

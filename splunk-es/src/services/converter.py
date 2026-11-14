@@ -9,6 +9,13 @@ from typing import Any
 
 from .exception import SplunkESDataConversionError, SplunkESValidationError
 from .models import SplunkESAlert
+from .step_matching import (
+    KEY_HOSTS,
+    KEY_MARKER_FIELDS,
+    KEY_TIME,
+    extract_alert_hosts,
+    extract_marker_fields,
+)
 from .utils.parent_process_parser import ParentProcessParser
 
 LOG_PREFIX = "[SplunkESConverter]"
@@ -163,6 +170,18 @@ class Converter:
                 self.logger.debug(
                     f"{LOG_PREFIX} Using parent process name: {parent_process_name}"
                 )
+
+            # Step-matching context: event time, host names and the fields
+            # that may carry a per-step marker. Kept under "_alert_*" keys so
+            # they never collide with OpenAEV signature types.
+            raw = alert_data.raw or {}
+            hosts = extract_alert_hosts(raw)
+            marker_fields = extract_marker_fields(raw)
+            if hosts or marker_fields:
+                oaev_data[KEY_HOSTS] = hosts
+                oaev_data[KEY_MARKER_FIELDS] = marker_fields
+            if oaev_data and alert_data.time:
+                oaev_data[KEY_TIME] = alert_data.time
 
             if alert_data.signature:
                 self.logger.debug(
