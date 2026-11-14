@@ -487,8 +487,9 @@ async function renderMain(animate) {
 
 
 /* ---------- full pipeline (all ants) ---------- */
-const ANTS = ["Intel", "Scenario builder", "Planner", "Gatekeeper", "Agent", "Splunk observer", "Falcon observer", "Analyst", "Matcher", "Reporter", "Referee"];
-const OPTIONAL_ANTS = ["Intel", "Scenario builder", "Referee"];   // only shown when a run starts from OpenCTI
+const ANTS = ["Intel", "Scenario builder", "Planner", "Gatekeeper", "Agent", "Splunk observer", "Falcon observer", "Analyst", "Matcher", "Detection engineer", "Reporter", "Referee"];
+const OPTIONAL_ANTS = ["Intel", "Scenario builder", "Detection engineer", "Referee"];
+const PROPOSAL_CLASS = { "ready for review": "det", "too noisy": "cnc", "does not catch": "mis", "deployed, but did not fire": "bad" };   // only shown when a run starts from OpenCTI
 const COVERAGE_CLASS = { simulated: "det", partial: "prv", "not simulated": "cnc", "no action": "mis" };
 function pipelineRuns(events) {
   const runs = [];
@@ -521,6 +522,8 @@ function antDetail(e) {
     e.data.techniques.map((t) => el("span", {}, el("i", { text: t.id + " " }), t.name))));
   if (e.ant === "Scenario builder" && e.data && e.data.coverage) out.push(el("div", { class: "kv" },
     e.data.coverage.map((c) => el("span", {}, el("i", { text: c.technique + " " }), c.status))));
+  if (e.ant === "Detection engineer" && e.data && e.data.proposals) out.push(el("div", { class: "kv" },
+    e.data.proposals.map((p) => el("span", {}, el("i", { text: p.title + ": " }), p.status))));
   if (e.ant === "Planner" && Array.isArray(e.data)) out.push(el("div", { class: "kv" },
     e.data.map((s) => el("span", {}, el("i", { text: s.test + " " }), s.host))));
   if (e.ant === "Gatekeeper" && Array.isArray(e.data) && e.data.length) out.push(el("div", { class: "kv" },
@@ -551,6 +554,20 @@ function scoreCard(end) {
   const table = (title, heads, rows) => card.append(el("div", { class: "body", style: "padding-top:0" }, el("div", { class: "fact" },
     el("div", { class: "k", text: title }), el("div", { class: "tbl-wrap" }, el("table", {},
       el("thead", {}, el("tr", {}, heads.map((h) => el("th", { text: h })))), el("tbody", {}, rows))))));
+  const dp = r.detection_proposals || {};
+  if ((dp.proposals || []).length) table(`Detection proposals for the missed steps (tested on ${dp.events_checked} endpoint log entries; a person must approve and deploy)`,
+    ["Detection", "Result of the test", "Catches", "Noise on normal work", "Starting-point search"], dp.proposals.map((p) => el("tr", {},
+      el("td", {}, b(p.title), el("div", { class: "d", text: p.why })),
+      el("td", {}, el("span", { class: "chip " + (PROPOSAL_CLASS[p.status] || "neu"), text: p.status })),
+      el("td", {}, `${p.caught} of ${p.of} missed steps`, el("div", { class: "d", text: p.covers.map((c) => c.technique).join(", ") })),
+      el("td", {}, p.noise ? `${p.noise} time(s) in ${p.baseline_hours} h` : `none in ${p.baseline_hours} h`,
+        p.noise_examples.length ? el("div", { class: "d", text: "e.g. " + p.noise_examples.join("; ") }) : null),
+      el("td", {}, el("div", { class: "spl", text: p.spl })))));
+  if ((dp.no_proposal || []).length) table("Missed steps with nothing to propose", ["Test", "Technique", "Why"],
+    dp.no_proposal.map((n) => el("tr", {}, el("td", {}, b(n.test_id)), el("td", { text: n.technique }), el("td", { text: n.why }))));
+  if ((dp.advice || []).length) table("Blocking: advice only, the ants change nothing", ["Test", "Host", "Advice"],
+    dp.advice.map((a) => el("tr", {}, el("td", {}, b(a.test_id)), el("td", { class: "mono", text: a.host }), el("td", { text: a.advice }))));
+  if (dp.error) table("Detection proposals", ["Note"], [el("tr", {}, el("td", { text: dp.error }))]);
   if (r.referee) table(`Blind check (seed ${r.referee.seed}): what really happened against what the ants said`,
     ["Step", "What really happened (hidden from the ants)", "Decoys mixed in", "Right answer", "Ants said", "Referee"],
     r.referee.rows.map((x) => el("tr", {},

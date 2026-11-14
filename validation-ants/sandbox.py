@@ -35,7 +35,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from ants.agent_sim import FMT, SimulatedAgent, Telemetry  # noqa: E402
+from ants.agent_sim import FMT, RAW_INDEX, SimulatedAgent, Telemetry  # noqa: E402
+from ants.detection_engineer import DetectionEngineer, evaluate, strip_markers  # noqa: E402
 from ants.analyst import SearchAnalyst  # noqa: E402
 from ants.gatekeeper import Gatekeeper, Refused  # noqa: E402
 from ants.intel import IntelAnt, IntelError, OpenCTIClient  # noqa: E402
@@ -121,6 +122,7 @@ class SplunkMock(BaseHTTPRequestHandler):
         MOCK["splunk_searches"].append(spl)
         # A small stand-in for Splunk's filtering: quoted terms and the time range.
         # sourcetype="X" (narrow search) limits the rows; other quoted strings are terms.
+        indexes = set(re.findall(r"\bindex=([\w\-.]+)", base))
         sourcetypes = set(re.findall(r'sourcetype="([^"]+)"', base))
         terms = [t.rstrip("*").lower() for t in re.findall(r'"([^"]+)"', base)
                  if t not in sourcetypes]
@@ -131,6 +133,8 @@ class SplunkMock(BaseHTTPRequestHandler):
             if not (earliest <= _row_time(row) <= latest):
                 continue
             if sourcetypes and row.get("sourcetype") not in sourcetypes:
+                continue
+            if indexes and row.get("index", "main") not in indexes:
                 continue
             text = " ".join(str(v) for v in row.values()).lower()
             if not terms or any(t in text for t in terms):
@@ -306,6 +310,24 @@ class Ants:
             "SPLUNKES_OFFSET": "PT1S", "SPLUNKES_VERIFY_SSL": "false",
             "SPLUNKES_MEMORY_PATH": str(work / "location_memory.json"),
         })
+        seed_baseline()
+        # A second, read-only view of Splunk: the plain endpoint logs, through the
+        # same checked search path, for the detection engineer.
+        self.raw = SplunkObserver({
+            "SPLUNKES_ALERTS_INDEX": RAW_INDEX,
+            "SPLUNKES_MEMORY_PATH": str(work / "raw_reader_memory.json")})
+        from src.services.spl_validator import validate_spl
+        self.engineer = DetectionEngineer(self.raw.candidates, validate_spl, RAW_INDEX,
+                                          work / "detection_proposals.json")
+        self._alerted = set()
+        run_step = self.agent.run
+
+        def run_then_rules(step):
+            entry = run_step(step)
+            self.fire_deployed_rules()
+            return entry
+
+        self.agent.run = run_then_rules
         self.falcon = FalconObserver(FalconHttpClient(
             f"http://127.0.0.1:{FALCON_PORT}", "mock-client-id", "mock-only"))
         self.rulebook = RuleBook(work / "rulebook.json")
@@ -316,6 +338,28 @@ class Ants:
                                        work / "scenarios")
         self.opencti = OpenCTIClient(f"http://127.0.0.1:{OPENCTI_PORT}", "mock-only-token")
         self.runs = 0
+
+    def fire_deployed_rules(self):
+        """Stand-in for Splunk running the rules people have deployed: a deployed
+        detection that matches an endpoint log raises an alert in the alerts index."""
+        deployed = self.engineer.deployed()
+        if not deployed:
+            return
+        raw = [r for r in TELEMETRY.splunk_rows if r.get("index") == RAW_INDEX]
+        events = [{"time": datetime.strptime(r["_time"], FMT).replace(tzinfo=timezone.utc),
+                   "host": r["dest_host"].split(".")[0], "text": strip_markers(r.get("process", ""))}
+                  for r in raw]
+        for det in deployed:
+            for i in evaluate(det, events):
+                key = (det["id"], id(raw[i]))
+                if key in self._alerted:
+                    continue
+                self._alerted.add(key)
+                when = datetime.strptime(raw[i]["_time"], FMT) + timedelta(seconds=20)
+                TELEMETRY.splunk_rows.append({
+                    "_time": when.strftime(FMT), "index": "main", "sourcetype": "detection:alerts",
+                    "dest_host": raw[i]["dest_host"], "rule_name": det["title"],
+                    "process": raw[i]["process"]})
 
     def run(self, tests, hosts, before_step=None, label=None, scenario=None, plan=None,
             finish=None):
@@ -331,8 +375,8 @@ class Ants:
             planner=self.planner, gatekeeper=self.gatekeeper, agent=self.agent,
             observers=[self.splunk, self.falcon], matcher=self.matcher,
             reporter=self.reporter, test_ids=tests, hosts=hosts,
-            approver="purple.lead", analyst=self.analyst, emit=emit,
-            before_step=before_step, plan=plan)
+            approver="purple.lead", analyst=self.analyst, engineer=self.engineer,
+            emit=emit, before_step=before_step, plan=plan)
         report["splunk_searches"] = {k: self.splunk.searches[k] - before[k]
                                      for k in before}
         report["teams"] = team_views(report, {
@@ -364,6 +408,11 @@ def age_telemetry(hours=1):
         for key in ("created_timestamp", "updated_timestamp"):
             moved = datetime.strptime(alert[key].rstrip("Z"), FMT) - shift
             alert[key] = moved.strftime(FMT) + "Z"
+
+
+def step_rows():
+    """Splunk rows written because a step ran (the baseline activity is not one)."""
+    return [r for r in TELEMETRY.splunk_rows if r.get("source") != "baseline"]
 
 
 def outcome_of(report, test_id, host=HOST1["name"]):
@@ -512,7 +561,7 @@ def s_scenario_guards():
         refused(label, lambda: IntelAnt.from_bundle(ants.opencti.report_bundle(REPORT_ID)))
     MOCK["opencti_mode"] = "ok"
     refused("OpenCTI unreachable", lambda: OpenCTIClient("http://127.0.0.1:9", "x").report_bundle(REPORT_ID))
-    if list((WORK / "scenarios").glob("*.json")) or TELEMETRY.splunk_rows:
+    if list((WORK / "scenarios").glob("*.json")) or step_rows():
         fails.append("something was built or run from a broken source")
 
     threat = IntelAnt.from_bundle(ants.opencti.report_bundle(REPORT_ID))
@@ -763,6 +812,146 @@ def playground_many(count, first_seed=1):
             tally[row["call"]] = tally.get(row["call"], 0) + 1
         wrong += [f"seed {seed}: {f}" for f in fails]
     return tally, wrong
+
+
+def seed_baseline():
+    """A day of ordinary admin activity in the endpoint logs (no test markers)."""
+    if any(r.get("source") == "baseline" for r in TELEMETRY.splunk_rows):
+        return
+    commands = ["ipconfig /all", "whoami", "tasklist /svc", "systeminfo",
+                "net user administrator", "netsh advfirewall show allprofiles", "arp -a",
+                "net localgroup administrators", "ping fileserver01", "gpupdate /force"]
+    hosts = ["ws-test-01", "ws-test-02", "ws-admin-07"]
+    start = datetime.now(timezone.utc) - timedelta(hours=24)
+    for k in range(72):                                   # one command every 20 minutes
+        TELEMETRY.splunk_rows.append({
+            "_time": (start + timedelta(minutes=20 * k)).strftime(FMT), "index": RAW_INDEX,
+            "sourcetype": "XmlWinEventLog:Sysmon", "EventCode": "1", "source": "baseline",
+            "dest_host": f"{hosts[k % 3]}.lab.local", "process": commands[k % len(commands)],
+            "parent_process_name": "explorer.exe"})
+
+
+def detection_loop_tests(ants):
+    """The OpenCTI scenario's tests plus one test that should be blocked but is only detected."""
+    threat, draft = build_from_opencti(ants)
+    scenario = ants.builder.approve(draft["id"], "purple.lead")
+    ants.defences["T-FILE-002"] = dict(DEFENCES["T-FILE-002"], falcon="detect")
+    return ants.planner.use_scenario(scenario) + ["T-FILE-002"]
+
+
+def s_detection_loop():
+    """Missed -> tested proposal -> a person approves and deploys -> the re-run says Detected."""
+    ants, fails, box = Ants(), [], {}
+
+    def first():
+        box["ids"] = detection_loop_tests(ants)
+        return box["ids"]
+
+    r1 = ants.run(first, [HOST1], label="first run: four techniques are missed")
+    d = r1["detection_proposals"]
+    by_id = {p["id"]: p for p in d["proposals"]}
+    burst = by_id.get("DET-DISCOVERY-BURST", {})
+    if (burst.get("status"), burst.get("caught"), burst.get("of"), burst.get("noise")) != \
+            ("ready for review", 4, 4, 0):
+        fails.append(f"burst proposal: {burst.get('status')}, caught {burst.get('caught')}/"
+                     f"{burst.get('of')}, noise {burst.get('noise')}")
+    noisy = [p for p in d["proposals"] if p["kind"] == "single"]
+    if len(noisy) != 4 or any(p["status"] != "too noisy" or p["noise"] < 1 for p in noisy):
+        fails.append(f"single-command rules: {[(p['id'], p['status'], p['noise']) for p in noisy]}")
+    if any("oaev" in p["spl"].lower() for p in d["proposals"]):
+        fails.append("a proposed search keys on the test marker")
+    if d["no_proposal"] or d["error"]:
+        fails.append(f"unexpected gaps: {d['no_proposal']} {d['error']}")
+    if [a["test_id"] for a in d["advice"]] != ["T-FILE-002"]:
+        fails.append(f"prevention advice: {d['advice']}")
+    if (r1["totals"][DETECTED], r1["totals"][PREVENTED], r1["totals"][MISSED]) != (7, 1, 4):
+        fails.append(f"first run totals {r1['totals']}")
+
+    for label, fn in (("deploying before approval", lambda: ants.engineer.record_deployed("DET-DISCOVERY-BURST", "x")),
+                      ("approving without a person", lambda: ants.engineer.approve("DET-DISCOVERY-BURST", " ")),
+                      ("approving a noisy rule", lambda: ants.engineer.approve(noisy[0]["id"], "secops.lead"))):
+        try:
+            fn()
+            fails.append(f"NOT refused: {label}")
+        except ValueError:
+            pass
+    if ants.engineer.deployed():
+        fails.append("something counts as deployed before a person said so")
+
+    ants.engineer.approve("DET-DISCOVERY-BURST", "secops.lead")
+    ants.engineer.record_deployed("DET-DISCOVERY-BURST", "secops.engineer")
+    ants.defences["T-FILE-002"]["falcon"] = "prevent"       # a person changed the Falcon policy
+    event("people", text="secops.lead approved the discovery rule, secops.engineer deployed it "
+                         "in Splunk, and the Falcon policy for the file test was set to block.")
+    r2 = ants.run(box["ids"], [HOST1], label="re-run after people deployed the rule and the policy")
+    if (r2["totals"][DETECTED], r2["totals"][PREVENTED], r2["totals"][MISSED]) != (10, 2, 0) \
+            or r2["detection_rate"] != 1.0:
+        fails.append(f"re-run totals {r2['totals']}, rate {r2['detection_rate']}")
+    kinds = sorted(x["kind"] for x in r2["drift"])
+    if kinds != ["improvement"] * 5 or r2["regressions"]:
+        fails.append(f"drift after the fix: {kinds}")
+    after = r2["detection_proposals"]
+    if after.get("proposals") or after.get("advice"):
+        fails.append(f"proposals after the fix: {after}")
+    return fails, ("4 missed -> 1 rule ready (catches 4 of 4, no noise in 24 h), 4 single-command "
+                   "rules set aside as too noisy; after people deployed: 10 Detected, 2 Prevented, "
+                   "0 Missed")
+
+
+def s_detection_guards():
+    """What the detection engineer refuses, and what it will not propose."""
+    ants, fails = Ants(), []
+    from src.services.spl_validator import validate_spl
+    library = json.loads((HERE / "ants" / "detections.json").read_text(encoding="utf-8"))
+
+    def engineer(detections, raw=None):
+        path = WORK / f"library-{len(list(WORK.glob('library-*')))}.json"
+        path.write_text(json.dumps(dict(library, detections=detections)), encoding="utf-8")
+        return DetectionEngineer(raw or ants.raw.candidates, validate_spl, RAW_INDEX,
+                                 WORK / f"{path.stem}-proposals.json", library_path=path)
+
+    cheat = dict(library["detections"][1], id="DET-CHEAT", all=["oaev-step"])
+    unsafe = dict(library["detections"][1], id="DET-UNSAFE", all=['x" | delete'])
+    for label, det in (("a rule that keys on the test marker", cheat),
+                       ("a rule with something other than plain words", unsafe)):
+        try:
+            engineer([det])
+            fails.append(f"NOT refused: {label}")
+        except ValueError:
+            pass
+
+    # Steps with nothing a real rule could key on, and a technique with no library entry.
+    ants.defences.update({"T-EXEC-001": {}, "T-DNS-003": {}, "T-NET-004": {}})
+    r = ants.run(["T-EXEC-001", "T-DNS-003", "T-NET-004"], [HOST1], label="three misses with nothing to propose")
+    d = r["detection_proposals"]
+    if d["proposals"] or len(d["no_proposal"]) != 3:
+        fails.append(f"expected three 'no proposal' entries: {d}")
+
+    # A rule that does not catch the step is reported as such.
+    plan = ants.planner.plan(["T-EXEC-001"], [HOST1])
+    wrong = dict(library["detections"][2], id="DET-WRONG", all=["ipconfig", "/displaydns"])
+    ants.planner.tests["PG-IPCONFIG"] = {"id": "PG-IPCONFIG", "title": "T1016", "technique": "T1016",
+                                         "action": "network_config", "expect": {"splunk": "detection"}}
+    ants.defences["PG-IPCONFIG"] = {}
+    ants.engineer = engineer([wrong])
+    r2 = ants.run(["PG-IPCONFIG"], [HOST1], label="a rule that does not catch the step")
+    got = [(p["id"], p["status"]) for p in r2["detection_proposals"]["proposals"]]
+    if got != [("DET-WRONG", "does not catch")]:
+        fails.append(f"non-catching rule: {got}")
+
+    # Unreadable endpoint logs: nothing is proposed, nothing crashes.
+    def broken(*a):
+        raise RuntimeError("endpoint log index unreachable")
+
+    ants.engineer = engineer(library["detections"], raw=broken)
+    r3 = ants.run(["PG-IPCONFIG"], [HOST1], label="endpoint logs cannot be read")
+    d3 = r3["detection_proposals"]
+    if d3["proposals"] or not d3["error"]:
+        fails.append(f"unreadable logs: {d3}")
+    _ = plan
+    return fails, ("refused: marker-keyed rule, non-plain terms; nothing proposed for marker-only "
+                   "steps or an uncovered technique; a non-catching rule is reported; unreadable "
+                   "logs give no proposal")
 
 
 def s_search_changes():
@@ -1019,7 +1208,7 @@ def s_gate_outside_window():
         "not_after": (now - timedelta(days=1)).isoformat(), "max_steps": 20}), []
     r = ants.run(["T-EXEC-001", "T-DNS-003"], [HOST1])
     want_not_run(fails, r, "outside_window", 2)
-    if r["steps"] or r["detection_rate"] is not None or TELEMETRY.splunk_rows:
+    if r["steps"] or r["detection_rate"] is not None or step_rows():
         fails.append("something ran or was scored outside the window")
     return fails, "window ended yesterday: both steps refused, nothing scored"
 
@@ -1201,6 +1390,8 @@ def s_drift():
 
 
 SCENARIOS = {
+    "detection_loop": ("From Missed to Detected: proposal, approval, re-run", s_detection_loop),
+    "detection_guards": ("Detection engineer: what it refuses", s_detection_guards),
     "playground": ("Playground: blind run with decoys", s_playground),
     "threat_scenario": ("Scenario from OpenCTI, built and run", s_threat_scenario),
     "scenario_guards": ("Scenario builder: what it refuses", s_scenario_guards),

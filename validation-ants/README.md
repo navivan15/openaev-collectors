@@ -8,7 +8,7 @@ Falcon are mock servers. It is for authorised testing of systems the organisatio
 
 ```
 intel -> scenario builder -> planner -> gatekeeper -> agent
-      -> Splunk observer + Falcon observer -> analyst -> matcher -> reporter
+      -> Splunk observer + Falcon observer -> analyst -> matcher -> detection engineer -> reporter
 ```
 
 | Ant | File | What it does |
@@ -22,6 +22,7 @@ intel -> scenario builder -> planner -> gatekeeper -> agent
 | Falcon observer | `ants/observers.py` | Read-only reader of Falcon alerts (sign in, list ids, fetch alerts). Same three checks: time window, host, step marker. Reports `Prevented` from the alert's disposition, using the fork's `crowdstrike/pattern_disposition.py`. |
 | Analyst | `ants/analyst.py` | After each run, writes one entry per step to a search-change log: how the test was searched, how it will be searched next time, and why. |
 | Matcher | `ants/matcher.py` | Fuses the sources into one verdict per step, counts a forwarded Falcon alert once, applies learned rules, raises findings. |
+| Detection engineer | `ants/detection_engineer.py`, `ants/detections.json` | For each missed step, tests a reviewed detection on the plain endpoint logs and writes a proposal for a person. Changes nothing in Splunk or Falcon. |
 | Reporter | `ants/reporter.py` | Scorecard for the run and drift against the previous run. |
 
 The four outcomes are the collector's: `Detected`, `Prevented`, `Missed`, `Could not check`. A step the gatekeeper
@@ -120,7 +121,7 @@ overwrite the history.
 Use the `splunk-es` virtualenv (it has `pyoaev` and `requests`):
 
 ```shell
-splunk-es/.venv/Scripts/python validation-ants/sandbox.py all        # 21 scenarios, pass/fail table
+splunk-es/.venv/Scripts/python validation-ants/sandbox.py all        # 23 scenarios, pass/fail table
 splunk-es/.venv/Scripts/python validation-ants/sandbox.py full_run   # one scenario with details
 ```
 
@@ -128,6 +129,47 @@ The scenarios cover a scenario fetched from OpenCTI and built into tests, what t
 (scope, changed step, kill switch, window, replay, step limit, audit tampering, bypass attempts), Falcon failures,
 the pipeline and prevention gaps, the learned rule with its quiet window, and drift. The demo page
 (`splunk-es/harness/demo_server.py`) lists them under "All ants: full pipeline".
+
+## From Missed to Detected
+
+A `Missed` step means no rule is watching for that technique. The detection engineer turns that into a tested
+proposal:
+
+1. It takes the run's missed steps and looks up reviewed detections for each technique in `ants/detections.json`.
+   It never invents one.
+2. It reads the plain endpoint logs for the run and for the 24 hours before, through the collector's checked search.
+   These are the ordinary "this process started with this command line" records, kept in their own index, not alerts.
+3. It strips every test marker from those logs and evaluates each detection on what is left, so a detection only
+   counts when it catches the behaviour. A library entry that keys on the marker is refused when the library loads.
+4. It reports, per detection: how many of the missed steps it catches, and how often it would also have fired on
+   ordinary work in those 24 hours.
+
+| Result | Meaning |
+|---|---|
+| `ready for review` | Catches every missed step it covers and did not fire on ordinary work. |
+| `too noisy` | Catches the step, but also fired on ordinary work. Set aside. |
+| `does not catch` | Did not match the step's own log entry. |
+| `deployed, but did not fire` | A person recorded it as deployed and the step was still missed. |
+
+Some missed steps get no proposal, with the reason: the step has no behaviour beyond the marker (a plain echo), the
+library has no detection for that technique, or the step left no endpoint log.
+
+**People decide.** `approve(proposal, person)` only works on a `ready for review` proposal.
+`record_deployed(proposal, person)` only works after approval, and it records that a person deployed the rule; the
+ant deploys nothing. In the sandbox, a stand-in for Splunk then raises an alert whenever a deployed detection matches
+an endpoint log, so the re-run shows the step as `Detected` and the reporter lists it as an improvement.
+
+**Stopping it (prevention) is advice only.** When Falcon saw a step but did not block it, the report says so and
+explains that blocking is a Falcon policy change for a person to make once the detection has stayed quiet. The ants
+never change Falcon.
+
+The search text in a proposal is rendered from the same logic the ant tested, and it passes the collector's
+validator, but it has not been run by a real Splunk. Treat it as a starting point for the reviewer. The noise figure
+comes from the sandbox's synthetic day of admin activity, not from your environment.
+
+The library has nine detections today: eight single-command ones and one that needs several discovery tools from the
+same host within five minutes. In the sandbox the single-command ones come out `too noisy` and the combined one comes
+out `ready for review`, which is the usual result in practice too.
 
 ## Playground: do the ants catch it?
 

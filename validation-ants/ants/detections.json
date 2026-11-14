@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "about": "Reviewed detections, by ATT&CK technique. Each one keys on what the technique does, never on the test marker. 'single' matches one command line; 'burst' needs several different tools from the same host within a short time. The SPL rendered from an entry is a starting point for the reviewer, not a finished rule.",
+  "detections": [
+    {
+      "id": "DET-DISCOVERY-BURST",
+      "title": "Several discovery tools from one host within five minutes",
+      "kind": "burst",
+      "techniques": ["T1082", "T1016", "T1033", "T1057", "T1069.001", "T1087.001", "T1018"],
+      "sourcetype": "XmlWinEventLog:Sysmon",
+      "tools": [["systeminfo"], ["ipconfig", "/all"], ["whoami"], ["tasklist"], ["net", "localgroup"], ["net", "user"], ["arp", "-a"]],
+      "min_distinct": 3,
+      "within_seconds": 300,
+      "why": "One discovery command is ordinary admin work. Several different ones from the same host within minutes is what an intruder's first look around looks like."
+    },
+    {
+      "id": "DET-T1082-SYSTEMINFO", "title": "systeminfo run", "kind": "single",
+      "techniques": ["T1082"], "sourcetype": "XmlWinEventLog:Sysmon", "all": ["systeminfo"],
+      "why": "Reads basic system information."
+    },
+    {
+      "id": "DET-T1016-IPCONFIG", "title": "ipconfig /all run", "kind": "single",
+      "techniques": ["T1016"], "sourcetype": "XmlWinEventLog:Sysmon", "all": ["ipconfig", "/all"],
+      "why": "Reads the full network configuration."
+    },
+    {
+      "id": "DET-T1033-WHOAMI", "title": "whoami run", "kind": "single",
+      "techniques": ["T1033"], "sourcetype": "XmlWinEventLog:Sysmon", "all": ["whoami"],
+      "why": "Reads the current user and its groups."
+    },
+    {
+      "id": "DET-T1057-TASKLIST", "title": "tasklist run", "kind": "single",
+      "techniques": ["T1057"], "sourcetype": "XmlWinEventLog:Sysmon", "all": ["tasklist"],
+      "why": "Lists running processes."
+    },
+    {
+      "id": "DET-T1069-LOCALGROUP", "title": "net localgroup run", "kind": "single",
+      "techniques": ["T1069.001"], "sourcetype": "XmlWinEventLog:Sysmon", "all": ["net", "localgroup"],
+      "why": "Lists local groups."
+    },
+    {
+      "id": "DET-T1087-NETUSER", "title": "net user run", "kind": "single",
+      "techniques": ["T1087.001"], "sourcetype": "XmlWinEventLog:Sysmon", "all": ["net", "user"],
+      "why": "Lists local accounts."
+    },
+    {
+      "id": "DET-T1018-ARP", "title": "arp -a run", "kind": "single",
+      "techniques": ["T1018"], "sourcetype": "XmlWinEventLog:Sysmon", "all": ["arp", "-a"],
+      "why": "Reads the table of recently seen neighbours."
+    },
+    {
+      "id": "DET-T1090-PORTPROXY", "title": "Port proxy tool used", "kind": "single",
+      "techniques": ["T1090.001"], "sourcetype": "XmlWinEventLog:Sysmon", "all": ["netsh", "portproxy"],
+      "why": "The port proxy part of netsh is rarely used in normal work and is a common way to relay traffic through a host."
+    }
+  ],
+  "no_behaviour": {
+    "echo_marker": "This step only prints the marker. There is nothing a real rule could key on except the marker itself.",
+    "ps_echo_marker": "This step only prints the marker. There is nothing a real rule could key on except the marker itself.",
+    "drop_marker_file": "An empty file in the temp folder is too ordinary to detect by itself; the marker in its name is what makes it stand out.",
+    "dns_lookup_marker": "The looked-up name is special only because of the marker and the reserved test domain."
+  }
+}

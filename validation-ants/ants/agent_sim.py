@@ -17,6 +17,7 @@ from .gatekeeper import Gatekeeper
 from .models import Step, implant_name
 
 FMT = "%Y-%m-%dT%H:%M:%S"
+RAW_INDEX = "telemetry"   # plain endpoint logs; alerts are in the collector's alerts index
 # Falcon pattern_disposition bits (see crowdstrike/pattern_disposition.py)
 DISPOSITION_DETECT_ONLY = 0
 DISPOSITION_PROCESS_BLOCKED = 2048
@@ -64,6 +65,16 @@ class SimulatedAgent:
         command = step.command if marked else step.command.split(step.id)[0] + "..."
         parent = implant_name(step.id) if marked else "explorer.exe"
         fqdn = f"{step.host.lower()}.lab.local"
+
+        # The plain endpoint log. It exists whether or not any rule fires, it is not
+        # an alert, and it lives in its own index, away from the alerts.
+        if not step.agentless:
+            self.telemetry.splunk_rows.append({
+                "_time": (step.start + timedelta(seconds=5)).strftime(FMT),
+                "index": RAW_INDEX, "sourcetype": "XmlWinEventLog:Sysmon", "EventCode": "1",
+                "dest_host": fqdn, "process": step.command,
+                "parent_process_name": implant_name(step.id),
+            })
 
         falcon = profile.get("falcon")
         composite = f"cid0a1b2c:ind:{step.id[:8]}:{4000 + self._counter}-10357-{self._counter}"

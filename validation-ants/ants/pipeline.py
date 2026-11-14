@@ -25,6 +25,7 @@ def run_validation(
     hosts: list[dict[str, str]],
     approver: str,
     analyst: Any = None,
+    engineer: Any = None,
     plan: Any = None,
     emit: Emit = lambda *a, **k: None,
     before_step: Callable[[int, Step], None] | None = None,
@@ -95,8 +96,24 @@ def run_validation(
                     f"{sum(len(v.findings) for v in verdicts)} finding(s)",
          data=[v.to_dict() for v in verdicts])
 
-    # 7. Reporter
+    # 7. Detection engineer: a tested proposal for each missed step
+    proposals: dict[str, Any] = {}
+    if engineer is not None and verdicts:
+        proposals = engineer.propose(verdicts)
+        ready = [p for p in proposals["proposals"] if p["status"] == "ready for review"]
+        if proposals["proposals"] or proposals["no_proposal"] or proposals["advice"] \
+                or proposals["error"]:
+            emit("Detection engineer",
+                 proposals["error"] or (
+                     f"{len(ready)} detection(s) ready for a person to review, "
+                     f"{len(proposals['proposals']) - len(ready)} tested and set aside, "
+                     f"{len(proposals['no_proposal'])} missed step(s) with nothing to propose, "
+                     f"{len(proposals['advice'])} prevention note(s)"),
+                 status="stop" if proposals["error"] else "ok", data=proposals)
+
+    # 8. Reporter
     report = reporter.report(plan.run_id, verdicts, not_run)
+    report["detection_proposals"] = proposals
     report["search_changes"] = changes
     rate = report["detection_rate"]
     emit("Reporter", f"Detection rate {'n/a' if rate is None else format(rate, '.0%')} over "
