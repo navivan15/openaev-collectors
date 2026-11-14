@@ -214,7 +214,7 @@ still satisfy them.
 | `Detected` | An alert was tied to the step (`match_method` = `step_marker` or `legacy`). | `Detected`, success, plus a trace |
 | `Prevented` | The tool blocked the step. Part of the shared outcome model; Splunk ES is detection-only and never returns it. | - |
 | `Missed` | Splunk was searched properly and no alert could be tied to the step. Reason: `no_alerts`, `no_matching_alert`, `marker_absent`, `wrong_host` or `outside_time_window`. | `Not Detected`, failure |
-| `Could not check` | The collector never got a trustworthy answer. Reason: `splunk_auth_failed`, `splunk_unreachable`, `index_missing`, `splunk_search_failed`, `prevention_not_supported` or `collector_error`. | Nothing; the expectation stays pending |
+| `Could not check` | The collector never got a trustworthy answer. Reason: `auth_failed`, `source_unreachable`, `data_source_missing`, `search_failed`, `expectation_not_supported` or `collector_error`. | Nothing; the expectation stays pending |
 
 `Could not check` covers a Splunk connection or authentication failure, a missing or unreadable alerts index (checked
 with `GET /services/data/indexes/{index}` before searching; skipped for wildcard or multi-index values), a search that

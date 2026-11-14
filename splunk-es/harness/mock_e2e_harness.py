@@ -62,8 +62,8 @@ SCENARIOS = {
     # --- original scenarios ---------------------------------------------------
     "detected":          {"outcome": "Detected", "method": "step_marker"},
     "not_detected":      {"outcome": "Missed", "reason": "marker_absent"},
-    "prevention":        {"outcome": "Could not check", "reason": "prevention_not_supported"},
-    "auth_fail":         {"outcome": "Could not check", "reason": "splunk_auth_failed"},
+    "prevention":        {"outcome": "Could not check", "reason": "expectation_not_supported"},
+    "auth_fail":         {"outcome": "Could not check", "reason": "auth_failed"},
     "token":             {"outcome": "Detected"},
     "ip_only":           {"outcome": "Detected", "method": "legacy"},
     "ipv6":              {"outcome": "Detected", "method": "legacy"},
@@ -80,9 +80,9 @@ SCENARIOS = {
     "time_window_miss":  {"outcome": "Missed", "reason": "outside_time_window"},
     "wrong_host":        {"outcome": "Missed", "reason": "wrong_host"},
     # --- could not check causes -----------------------------------------------
-    "cnc_unreachable":   {"outcome": "Could not check", "reason": "splunk_unreachable"},
-    "cnc_missing_index": {"outcome": "Could not check", "reason": "index_missing"},
-    "cnc_search_error":  {"outcome": "Could not check", "reason": "splunk_search_failed"},
+    "cnc_unreachable":   {"outcome": "Could not check", "reason": "source_unreachable"},
+    "cnc_missing_index": {"outcome": "Could not check", "reason": "data_source_missing"},
+    "cnc_search_error":  {"outcome": "Could not check", "reason": "search_failed"},
 }
 
 SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "detected"

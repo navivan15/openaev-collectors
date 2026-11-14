@@ -12,8 +12,10 @@ from .models import SplunkESAlert
 from .step_matching import (
     KEY_HOSTS,
     KEY_MARKER_FIELDS,
+    KEY_SOURCE,
     KEY_TIME,
     extract_alert_hosts,
+    extract_alert_source,
     extract_marker_fields,
 )
 from .utils.parent_process_parser import ParentProcessParser
@@ -182,6 +184,8 @@ class Converter:
                 oaev_data[KEY_MARKER_FIELDS] = marker_fields
             if oaev_data and alert_data.time:
                 oaev_data[KEY_TIME] = alert_data.time
+            if oaev_data:
+                oaev_data[KEY_SOURCE] = extract_alert_source(raw)
 
             if alert_data.signature:
                 self.logger.debug(

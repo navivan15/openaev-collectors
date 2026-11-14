@@ -207,7 +207,36 @@ class SplunkESTraceService:
         self.logger.debug(
             f"{LOG_PREFIX} Creating trace from matching data {matching_data}"
         )
+        return self._base_alert_name(matching_data) + self._source_suffix(
+            matching_data
+        )
 
+    @staticmethod
+    def _source_suffix(matching_data: dict[str, Any]) -> str:
+        """Describe where the alert was found, for the trace's alert name.
+
+        OpenAEV traces only carry a name, a link and a date, so the source
+        details go in the name: index, sourcetype, the field that carried the
+        step marker, the rule, and the Falcon alert id when the event is a
+        forwarded CrowdStrike alert (so the same detection reported by the
+        crowdstrike collector can be counted once).
+        """
+        source = matching_data.get("_alert_source") or {}
+        match = matching_data.get("_match") or {}
+        parts = []
+        for label, value in (
+            ("index", source.get("index")),
+            ("sourcetype", source.get("sourcetype")),
+            ("field", match.get("field")),
+            ("rule", source.get("rule_name")),
+            ("falcon_alert_id", source.get("falcon_alert_id")),
+        ):
+            if value:
+                parts.append(f"{label}={str(value)[:80]}")
+        return f" [{' '.join(parts)}]" if parts else ""
+
+    def _base_alert_name(self, matching_data: dict[str, Any]) -> str:
+        """Alert name from the kind of data that matched."""
         if (
             "source_ipv4_address" in matching_data
             or "source_ipv6_address" in matching_data

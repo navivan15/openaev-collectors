@@ -80,6 +80,21 @@ HOST_FIELDS: tuple[str, ...] = (
 KEY_TIME = "_alert_time"
 KEY_HOSTS = "_alert_hosts"
 KEY_MARKER_FIELDS = "_alert_marker_fields"
+KEY_SOURCE = "_alert_source"  # where the alert came from (index, sourcetype, ids)
+KEY_MATCH = "_match"  # how it was matched (method, field); added on a match
+
+# Fields that hold the CrowdStrike Falcon alert id when Falcon alerts are
+# forwarded into Splunk. The `crowdstrike` collector identifies the same alert
+# by its composite id, so keeping it lets a later step count a detection once.
+FALCON_ALERT_ID_FIELDS: tuple[str, ...] = (
+    "event.CompositeId",
+    "CompositeId",
+    "composite_id",
+    "event.DetectId",
+    "DetectId",
+    "detect_id",
+    "falcon_alert_id",
+)
 
 IP_KEYS = (
     "source_ipv4_address",
@@ -146,10 +161,12 @@ def markers_from_parent_process(parent_process_names: list[str]) -> list[str]:
     return markers
 
 
-def extract_alert_hosts(raw: dict[str, Any]) -> list[str]:
+def extract_alert_hosts(
+    raw: dict[str, Any], fields: tuple[str, ...] = HOST_FIELDS
+) -> list[str]:
     """Hostnames named in an alert (IPs excluded)."""
     hosts: list[str] = []
-    for f in HOST_FIELDS:
+    for f in fields:
         v = raw.get(f)
         values = v if isinstance(v, list) else [v]
         for item in values:
@@ -160,10 +177,28 @@ def extract_alert_hosts(raw: dict[str, Any]) -> list[str]:
     return hosts
 
 
-def extract_marker_fields(raw: dict[str, Any]) -> dict[str, str]:
+def extract_alert_source(raw: dict[str, Any]) -> dict[str, str]:
+    """Where an alert came from: index, sourcetype, rule and source alert id."""
+    out: dict[str, str] = {}
+    for key in ("index", "sourcetype", "source"):
+        if raw.get(key):
+            out[key] = str(raw[key])
+    rule = raw.get("rule_name") or raw.get("signature")
+    if rule:
+        out["rule_name"] = str(rule)
+    for f in FALCON_ALERT_ID_FIELDS:
+        if raw.get(f):
+            out["falcon_alert_id"] = str(raw[f])
+            break
+    return out
+
+
+def extract_marker_fields(
+    raw: dict[str, Any], fields: tuple[str, ...] = MARKER_FIELDS
+) -> dict[str, str]:
     """Alert fields that may carry a step marker, flattened to strings."""
     out: dict[str, str] = {}
-    for f in MARKER_FIELDS:
+    for f in fields:
         v = raw.get(f)
         if v is None or v == "":
             continue

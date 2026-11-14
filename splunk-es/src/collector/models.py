@@ -23,13 +23,19 @@ class Outcome(str, Enum):
 
 
 class CouldNotCheckReason(str, Enum):
-    """Why an expectation came out as Could not check."""
+    """Why an expectation came out as Could not check.
 
-    SPLUNK_AUTH_FAILED = "splunk_auth_failed"
-    SPLUNK_UNREACHABLE = "splunk_unreachable"
-    INDEX_MISSING = "index_missing"
-    SPLUNK_SEARCH_FAILED = "splunk_search_failed"
-    PREVENTION_NOT_SUPPORTED = "prevention_not_supported"
+    Names are source-neutral on purpose: the same model is meant to be used
+    by other collectors (e.g. an EDR source), where "data source" is a tenant
+    or an API scope rather than an index.
+    """
+
+    AUTH_FAILED = "auth_failed"
+    SOURCE_UNREACHABLE = "source_unreachable"
+    DATA_SOURCE_MISSING = "data_source_missing"
+    SEARCH_FAILED = "search_failed"
+    QUERY_REFUSED = "query_refused"
+    EXPECTATION_NOT_SUPPORTED = "expectation_not_supported"
     COLLECTOR_ERROR = "collector_error"
 
 
@@ -207,6 +213,11 @@ class ExpectationResult(BaseModel):
         None,
         description="How the alert was tied to the step: 'step_marker' or "
         "'legacy' (IPs + implant parent process).",
+    )
+    search_path: str | None = Field(
+        None,
+        description="Which search found (or failed to find) the alert: "
+        "'narrow' (remembered location) or 'wide'.",
     )
 
     @model_validator(mode="after")

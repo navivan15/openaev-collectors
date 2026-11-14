@@ -35,7 +35,7 @@ from .exception import (
     SplunkESServiceError,
     SplunkESValidationError,
 )
-from .step_matching import StepContext
+from .step_matching import KEY_MATCH, StepContext
 
 LOG_PREFIX = "[SplunkESExpectationService]"
 
@@ -265,7 +265,7 @@ class SplunkESExpectationService:
                 error_message="Splunk ES only supports DetectionExpectations, not PreventionExpectations",
                 skip_verdict=True,
                 outcome=Outcome.COULD_NOT_CHECK,
-                outcome_reason=CouldNotCheckReason.PREVENTION_NOT_SUPPORTED.value,
+                outcome_reason=CouldNotCheckReason.EXPECTATION_NOT_SUPPORTED.value,
             )
         else:
             self.logger.error(
@@ -324,7 +324,7 @@ class SplunkESExpectationService:
             error_message="Splunk ES only supports DetectionExpectations, not PreventionExpectations",
             skip_verdict=True,
             outcome=Outcome.COULD_NOT_CHECK,
-            outcome_reason=CouldNotCheckReason.PREVENTION_NOT_SUPPORTED.value,
+            outcome_reason=CouldNotCheckReason.EXPECTATION_NOT_SUPPORTED.value,
         )
 
     def _handle_expectation(
@@ -555,7 +555,15 @@ class SplunkESExpectationService:
                     )
                     return {
                         "is_valid": True,
-                        "matching_data": [data_item],
+                        "matching_data": [
+                            {
+                                **data_item,
+                                KEY_MATCH: {
+                                    "method": "step_marker",
+                                    "field": marker_field,
+                                },
+                            }
+                        ],
                         "total_data_found": len(oaev_data),
                         "match_method": "step_marker",
                     }
@@ -602,7 +610,12 @@ class SplunkESExpectationService:
 
                             result = {
                                 "is_valid": True,
-                                "matching_data": [data_item],
+                                "matching_data": [
+                                    {
+                                        **data_item,
+                                        KEY_MATCH: {"method": "legacy", "field": None},
+                                    }
+                                ],
                                 "total_data_found": len(oaev_data),
                                 "match_method": "legacy",
                             }
@@ -895,13 +908,13 @@ class SplunkESExpectationService:
             chain.append(current)
             current = current.__cause__ or current.__context__
         if any(isinstance(e, SplunkESAuthenticationError) for e in chain):
-            return CouldNotCheckReason.SPLUNK_AUTH_FAILED
+            return CouldNotCheckReason.AUTH_FAILED
         if any(isinstance(e, SplunkESIndexNotFoundError) for e in chain):
-            return CouldNotCheckReason.INDEX_MISSING
+            return CouldNotCheckReason.DATA_SOURCE_MISSING
         if any(isinstance(e, SplunkESNetworkError) for e in chain):
-            return CouldNotCheckReason.SPLUNK_UNREACHABLE
+            return CouldNotCheckReason.SOURCE_UNREACHABLE
         if any(isinstance(e, (SplunkESAPIError, SplunkESQueryError)) for e in chain):
-            return CouldNotCheckReason.SPLUNK_SEARCH_FAILED
+            return CouldNotCheckReason.SEARCH_FAILED
         return CouldNotCheckReason.COLLECTOR_ERROR
 
     def _convert_dict_to_result(
