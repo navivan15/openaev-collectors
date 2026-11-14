@@ -25,14 +25,17 @@ def run_validation(
     hosts: list[dict[str, str]],
     approver: str,
     analyst: Any = None,
+    plan: Any = None,
     emit: Emit = lambda *a, **k: None,
     before_step: Callable[[int, Step], None] | None = None,
 ) -> dict[str, Any]:
     """Run the whole pipeline once and return the reporter's report."""
     # 1. Planner
-    plan = planner.plan(test_ids, hosts)
-    emit("Planner", f"Planned {len(plan.steps)} step(s) from {len(test_ids)} test(s) "
-                    f"on {len(hosts)} host(s)",
+    if plan is None:
+        plan = planner.plan(test_ids, hosts)
+    emit("Planner", f"Planned {len(plan.steps)} step(s) from "
+                    f"{len({s.test_id for s in plan.steps})} test(s) "
+                    f"on {len({s.host for s in plan.steps})} host(s)",
          data=[{"test": s.test_id, "title": s.title, "host": s.host, "marker": s.id,
                 "command": s.command} for s in plan.steps])
 

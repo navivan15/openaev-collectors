@@ -922,14 +922,18 @@ class SplunkESExpectationService:
                     self.logger.debug(
                         f"{LOG_PREFIX} Data item {i + 1} is outside the step time window"
                     )
-                    rejections.append("outside_time_window")
+                    # Only a reason for THIS step when the alert is about it; in a
+                    # batched search most rows belong to other steps.
+                    if not ctx.markers or ctx.marker_found(data_item):
+                        rejections.append("outside_time_window")
                     continue
 
                 if ctx.hostname_check(data_item) is False:
                     self.logger.debug(
                         f"{LOG_PREFIX} Data item {i + 1} names a different host"
                     )
-                    rejections.append("wrong_host")
+                    if not ctx.markers or ctx.marker_found(data_item):
+                        rejections.append("wrong_host")
                     continue
 
                 marker_field = ctx.marker_found(data_item)

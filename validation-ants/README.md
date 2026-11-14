@@ -120,7 +120,7 @@ overwrite the history.
 Use the `splunk-es` virtualenv (it has `pyoaev` and `requests`):
 
 ```shell
-splunk-es/.venv/Scripts/python validation-ants/sandbox.py all        # 20 scenarios, pass/fail table
+splunk-es/.venv/Scripts/python validation-ants/sandbox.py all        # 21 scenarios, pass/fail table
 splunk-es/.venv/Scripts/python validation-ants/sandbox.py full_run   # one scenario with details
 ```
 
@@ -128,6 +128,42 @@ The scenarios cover a scenario fetched from OpenCTI and built into tests, what t
 (scope, changed step, kill switch, window, replay, step limit, audit tampering, bypass attempts), Falcon failures,
 the pipeline and prevention gaps, the learned rule with its quiet window, and drift. The demo page
 (`splunk-es/harness/demo_server.py`) lists them under "All ants: full pipeline".
+
+## Playground: do the ants catch it?
+
+The scenarios above check situations I chose. The playground checks the ants blind:
+
+1. It picks random steps on random in-scope hosts.
+2. Hidden from the ants, it decides what the defences do for each step: Falcon blocks it, Falcon only alerts, a
+   Splunk rule fires, the copy does or does not reach Splunk, the alert does or does not carry the marker, or nothing
+   reacts. In about one run in seven Falcon is down when the ants ask.
+3. It mixes in decoys: an unrelated alert on the same host, an alert with another step's marker, the step's own
+   marker on a different host, the step's own marker 40 minutes too early, an unrelated Falcon alert, and for network
+   steps an unrelated connection between the same two addresses.
+4. The ants run as usual. A referee, which knows the truth, then scores every verdict.
+
+| Referee's call | Meaning |
+|---|---|
+| caught | A real, markable alert was there and the ants said Detected or Prevented, the right one of the two. |
+| correct: nothing to catch | No defence reacted and the ants said Missed, whatever decoys were around. |
+| correctly could not check | The only source that could have seen it was down, and the ants did not call it Missed. |
+| not tied: the real alert has no marker | A defence did react, but its alert does not carry the marker. Known limit of marker matching. |
+| false catch, flagged as weak | A network step matched an unrelated connection on the same addresses. Known limit; always flagged. |
+| FALSE CATCH, MISSED A REAL ALERT, WRONG KIND, WRONG | The ants got it wrong. Any of these fails the run. |
+
+```shell
+splunk-es/.venv/Scripts/python validation-ants/sandbox.py playground            # one blind run, random seed
+PLAYGROUND_SEED=7 splunk-es/.venv/Scripts/python validation-ants/sandbox.py playground   # repeat one
+splunk-es/.venv/Scripts/python validation-ants/sandbox.py playground_many 100   # 100 blind runs, tally
+```
+
+Last tally of 100 blind runs (800 steps): 413 caught, 296 correct non-catches, 8 correctly could not check, 63 not
+tied (no marker in the alert), 20 false catches flagged as weak (network steps), 0 wrong calls. The referee was also
+checked against two deliberately broken ants (a Falcon observer that ignores the marker, a matcher that turns Could
+not check into Missed); it reported wrong calls for both and none once they were restored.
+
+The playground is still a simulation: the "defences" are the sandbox's own synthetic telemetry. It measures whether
+the ants read that telemetry correctly, not whether your real tools detect anything.
 
 ## What this is not
 

@@ -68,9 +68,16 @@ class Planner:
         """One step per test per host. ``hosts``: name, source_ip, target_ip."""
         if not test_ids or not hosts:
             raise PlanningError("A plan needs at least one test and one host")
+        return self.plan_pairs([(t, h) for h in hosts for t in test_ids])
+
+    def plan_pairs(self, pairs: list[tuple[str, dict[str, str]]]) -> Plan:
+        """One step per (test, host) pair, in the order given."""
+        if not pairs:
+            raise PlanningError("A plan needs at least one test and one host")
         run_id = str(uuid.uuid4())
         steps: list[Step] = []
-        for host in hosts:
+        for test_id, host in pairs:
+            test_ids = [test_id]
             if not re.match(r"^[A-Za-z0-9]([A-Za-z0-9\-.]{0,251}[A-Za-z0-9])?$",
                             str(host.get("name", ""))):
                 raise PlanningError(f"'{host.get('name')}' is not a host name")

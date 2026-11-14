@@ -12,10 +12,13 @@ Splunk, no real Falcon tenant, no real host.
   python validation-ants/sandbox.py all          # every scenario, pass/fail table
   python validation-ants/sandbox.py full_run     # one scenario with details
   python validation-ants/sandbox.py catalogue    # scenario list as JSON
+  python validation-ants/sandbox.py playground   # one blind run (PLAYGROUND_SEED=n to repeat one)
+  python validation-ants/sandbox.py playground_many 100   # 100 blind runs, tally of the calls
 
 Run it with the splunk-es virtualenv's Python (it has pyoaev and requests).
 """
 
+import io
 import json
 import logging
 import os
@@ -277,7 +280,8 @@ def start(handler, port):
 # The ants, wired together
 # ----------------------------------------------------------------------------
 class Ants:
-    def __init__(self, scope=None):
+    def __init__(self, scope=None, work=None):
+        work = work or WORK
         now = datetime.now(timezone.utc)
         self.planner = Planner()
         self.scope = scope or {
@@ -289,7 +293,7 @@ class Ants:
             "max_steps": 20,
         }
         self.gatekeeper = Gatekeeper(self.scope, self.planner.actions, os.urandom(32),
-                                     WORK / "audit.jsonl", WORK / "KILL_SWITCH")
+                                     work / "audit.jsonl", work / "KILL_SWITCH")
         self.defences = {k: dict(v) for k, v in DEFENCES.items()}
         self.agent = SimulatedAgent(self.gatekeeper, TELEMETRY, self.defences)
         self.splunk = SplunkObserver({
@@ -300,20 +304,21 @@ class Ants:
             "SPLUNKES_USERNAME": "svc_mock", "SPLUNKES_PASSWORD": "mock-only",
             "SPLUNKES_ALERTS_INDEX": "main", "SPLUNKES_MAX_RETRY": "0",
             "SPLUNKES_OFFSET": "PT1S", "SPLUNKES_VERIFY_SSL": "false",
-            "SPLUNKES_MEMORY_PATH": str(WORK / "location_memory.json"),
+            "SPLUNKES_MEMORY_PATH": str(work / "location_memory.json"),
         })
         self.falcon = FalconObserver(FalconHttpClient(
             f"http://127.0.0.1:{FALCON_PORT}", "mock-client-id", "mock-only"))
-        self.rulebook = RuleBook(WORK / "rulebook.json")
+        self.rulebook = RuleBook(work / "rulebook.json")
         self.matcher = Matcher(self.rulebook)
-        self.reporter = Reporter(WORK / "history.json")
-        self.analyst = SearchAnalyst(WORK / "search_changes.jsonl")
+        self.reporter = Reporter(work / "history.json")
+        self.analyst = SearchAnalyst(work / "search_changes.jsonl")
         self.builder = ScenarioBuilder(self.planner.actions, self.planner.not_simulated,
-                                       WORK / "scenarios")
+                                       work / "scenarios")
         self.opencti = OpenCTIClient(f"http://127.0.0.1:{OPENCTI_PORT}", "mock-only-token")
         self.runs = 0
 
-    def run(self, tests, hosts, before_step=None, label=None, scenario=None):
+    def run(self, tests, hosts, before_step=None, label=None, scenario=None, plan=None,
+            finish=None):
         if self.runs:
             age_telemetry()          # the next run happens "an hour later"
         self.runs += 1
@@ -327,12 +332,14 @@ class Ants:
             observers=[self.splunk, self.falcon], matcher=self.matcher,
             reporter=self.reporter, test_ids=tests, hosts=hosts,
             approver="purple.lead", analyst=self.analyst, emit=emit,
-            before_step=before_step)
+            before_step=before_step, plan=plan)
         report["splunk_searches"] = {k: self.splunk.searches[k] - before[k]
                                      for k in before}
         report["teams"] = team_views(report, {
             tid: self.planner.actions[t["action"]].get("category", "endpoint")
             for tid, t in self.planner.tests.items()})
+        if finish:
+            finish(report)
         if scenario and scenario.get("scenario"):
             built = scenario["scenario"]
             report["scenario"] = {k: built.get(k) for k in
@@ -532,6 +539,230 @@ def s_scenario_guards():
          status="stop")
     return fails, ("9 refusals: broken sources, unapproved draft, nameless approval, change after "
                    "approval, action off the allow-list")
+
+
+# ----------------------------------------------------------------------------
+# Playground: a blind run. Random steps, random defence behaviour and decoy
+# alerts that the ants are not told about; a referee then compares what the
+# ants said with what really happened.
+# ----------------------------------------------------------------------------
+DECOYS = {
+    "unmarked": "an unrelated alert on the same host at the same time",
+    "other_marker": "an alert carrying another step's marker",
+    "wrong_host": "this step's marker, but on a different host",
+    "stale": "this step's marker, but 40 minutes before the step",
+    "falcon_unmarked": "an unrelated Falcon alert on the same host",
+    "ip_pair": "an unrelated connection between the same two addresses",
+}
+
+
+def playground_setup(ants, rng, n_steps):
+    """Pick random steps and decide, hidden from the ants, what the defences do."""
+    import uuid as _uuid
+    truths, pairs = {}, []
+    actions = list(ants.planner.actions)
+    for i in range(n_steps):
+        action_id = rng.choice(actions)
+        action = ants.planner.actions[action_id]
+        host = rng.choice([HOST1, HOST2])
+        test_id = f"PG-{i + 1:02d}-{action_id}"
+        expect = dict(action["expect"])
+        ants.planner.tests[test_id] = {
+            "id": test_id, "title": f"{action['techniques'][0]} ({action_id})",
+            "technique": action["techniques"][0], "action": action_id, "expect": expect}
+        agentless = bool(action.get("agentless"))
+        profile = {}
+        if "falcon" in expect:
+            roll = rng.random()
+            falcon = (("prevent" if roll < 0.5 else "detect" if roll < 0.75 else None)
+                      if expect["falcon"] == "prevention" else ("detect" if roll < 0.6 else None))
+            if falcon:
+                profile.update(falcon=falcon, forward=rng.random() < 0.7)
+        if agentless:
+            if rng.random() < 0.4:
+                profile["splunk_rule"] = {"sourcetype": "pan:traffic",
+                                          "rule_name": "SMB to server", "ips": True}
+        elif rng.random() < (0.25 if profile.get("falcon") else 0.55):
+            dns = action_id == "dns_lookup_marker"
+            profile["splunk_rule"] = {
+                "sourcetype": "stream:dns" if dns else "XmlWinEventLog",
+                "rule_name": "DNS lookup of rare domain" if dns else "Suspicious command line",
+                "field": "query" if dns else "process"}
+        if profile and not agentless and rng.random() < 0.15:
+            profile["marker_in_alert"] = False        # the tool cut the command line short
+        pool = [d for d in DECOYS if (d == "ip_pair") == agentless or d in ("unmarked",)]
+        if not agentless:
+            pool = [d for d in pool if d != "ip_pair"]
+        else:
+            pool = ["ip_pair", "unmarked"]
+        decoys = rng.sample(pool, rng.choice([0, 0, 1, 1, 2]))
+        ants.defences[test_id] = profile
+        truths[test_id] = {"profile": profile, "decoys": decoys, "agentless": agentless,
+                           "expect": expect, "host": host["name"], "other": str(_uuid.UUID(int=rng.getrandbits(128), version=4))}
+        pairs.append((test_id, host))
+    return truths, pairs
+
+
+def add_decoys(step, truth):
+    """Alerts that have nothing to do with the step, or only look like they do."""
+    when = (step.start + timedelta(seconds=45)).strftime(FMT)
+    host = f"{step.host.lower()}.lab.local"
+    base = {"_time": when, "index": "main", "sourcetype": "XmlWinEventLog", "dest_host": host,
+            "rule_name": "Routine admin activity"}
+    for decoy in truth["decoys"]:
+        if decoy == "unmarked":
+            TELEMETRY.splunk_rows.append(dict(base, process="powershell.exe -nop Get-Process"))
+        elif decoy == "other_marker":
+            TELEMETRY.splunk_rows.append(dict(base, process=f"cmd.exe /c echo oaev-step-{truth['other']}"))
+        elif decoy == "wrong_host":
+            TELEMETRY.splunk_rows.append(dict(base, dest_host="ws-other-99.lab.local",
+                                              process=step.command))
+        elif decoy == "stale":
+            old = (step.start - timedelta(minutes=40)).strftime(FMT)
+            TELEMETRY.splunk_rows.append(dict(base, _time=old, process=step.command))
+        elif decoy == "falcon_unmarked":
+            TELEMETRY.falcon_alerts.append({
+                "id": f"ind:decoy:{len(TELEMETRY.falcon_alerts)}",
+                "composite_id": f"cid0a1b2c:ind:decoy:{len(TELEMETRY.falcon_alerts)}",
+                "display_name": "Routine admin activity", "filename": "powershell.exe",
+                "cmdline": "powershell.exe -nop Get-Process",
+                "parent_details": {"filename": "explorer.exe", "cmdline": "explorer.exe"},
+                "grandparent_details": {"filename": "userinit.exe"},
+                "device": {"hostname": step.host}, "pattern_disposition": 0,
+                "created_timestamp": when + "Z", "updated_timestamp": when + "Z"})
+        elif decoy == "ip_pair":
+            TELEMETRY.splunk_rows.append({"_time": when, "index": "main", "sourcetype": "pan:traffic",
+                                          "rule_name": "Backup job traffic",
+                                          "src_ip": step.source_ip, "dst_ip": step.target_ip})
+
+
+def referee(report, truths, falcon_down):
+    """Compare each verdict with what really happened. Returns one row per step."""
+    rows = []
+    for step in report["steps"]:
+        truth = truths[step["test_id"]]
+        p = truth["profile"]
+        marked = p.get("marker_in_alert", True)
+        falcon_fired = p.get("falcon") in ("detect", "prevent")
+        falcon_asked = "falcon" in truth["expect"]
+        splunk_real = bool(p.get("splunk_rule")) or (falcon_fired and p.get("forward", True))
+        falcon_visible = falcon_fired and marked and falcon_asked and not falcon_down
+        splunk_visible = splunk_real and (marked or truth["agentless"])
+        real_alert = falcon_fired or splunk_real
+        if falcon_visible and p["falcon"] == "prevent":
+            should = PREVENTED
+        elif falcon_visible or splunk_visible:
+            should = DETECTED
+        elif falcon_down and falcon_asked:
+            should = COULD_NOT_CHECK
+        else:
+            should = MISSED
+        happened = []
+        if p.get("falcon") == "prevent":
+            happened.append("Falcon blocked it")
+        elif p.get("falcon") == "detect":
+            happened.append("Falcon raised an alert")
+        if falcon_fired:
+            happened.append("copy forwarded to Splunk" if p.get("forward", True)
+                            else "copy never reached Splunk")
+        if p.get("splunk_rule"):
+            happened.append("a Splunk rule fired")
+        if real_alert and not marked:
+            happened.append("but the alert does not carry the marker")
+        if not real_alert:
+            happened.append("no defence reacted")
+        if falcon_down:
+            happened.append("Falcon was down when the ants asked")
+        said = step["outcome"]
+        flagged = any(f.startswith(("weak match", "needs confirmation")) for f in step["findings"])
+        if said == should:
+            if said in (DETECTED, PREVENTED):
+                call, ok = "caught", True
+            elif said == COULD_NOT_CHECK:
+                call, ok = "correctly could not check", True
+            elif real_alert:
+                call, ok = "not tied: the real alert has no marker", True   # known limit
+            else:
+                call, ok = "correct: nothing to catch", True
+        elif said in (DETECTED, PREVENTED) and should in (MISSED, COULD_NOT_CHECK):
+            call = "false catch, flagged as weak" if flagged else "FALSE CATCH"
+            ok = flagged and truth["agentless"]                             # known limit
+        elif said == MISSED and should in (DETECTED, PREVENTED):
+            call, ok = "MISSED A REAL ALERT", False
+        elif said in (DETECTED, PREVENTED) and should in (DETECTED, PREVENTED):
+            call, ok = "WRONG KIND", False
+        else:
+            call, ok = "WRONG", False
+        rows.append({"test_id": step["test_id"], "host": step["host"],
+                     "happened": "; ".join(happened),
+                     "decoys": [DECOYS[d] for d in truth["decoys"]],
+                     "should": should, "said": said, "call": call, "ok": ok})
+    return rows
+
+
+def run_playground(seed, n_steps=8, work=None):
+    """One blind run. Returns (fails, note, rows)."""
+    import random
+    rng = random.Random(seed)
+    ants = Ants(work=work)
+    truths, pairs = playground_setup(ants, rng, n_steps)
+    falcon_down = rng.random() < 0.15
+    MOCK["falcon_mode"] = "error" if falcon_down else "ok"
+    plain_run = ants.agent.run
+
+    def run_with_decoys(step):
+        entry = plain_run(step)
+        add_decoys(step, truths[step.test_id])
+        return entry
+
+    ants.agent.run = run_with_decoys
+    box = {}
+
+    def finish(report):
+        rows = referee(report, truths, falcon_down)
+        box["rows"] = rows
+        report["referee"] = {"seed": seed, "rows": rows}
+        wrong = [r for r in rows if not r["ok"]]
+        emit("Referee", f"{sum(1 for r in rows if r['call'] == 'caught')} caught, "
+                        f"{sum(1 for r in rows if r['call'].startswith('correct'))} correct "
+                        f"non-catches, {len(wrong)} wrong", status="ok" if not wrong else "none",
+             data=rows)
+
+    ants.run([], [], label=f"blind run, seed {seed}", plan=ants.planner.plan_pairs(pairs),
+             finish=finish)
+    MOCK["falcon_mode"] = "ok"
+    rows = box["rows"]
+    fails = [f"{r['test_id']}: {r['call']} (should be {r['should']}, ants said {r['said']}; "
+             f"{r['happened']}; decoys: {r['decoys']})" for r in rows if not r["ok"]]
+    real = sum(1 for r in rows if r["should"] in (DETECTED, PREVENTED))
+    caught = sum(1 for r in rows if r["call"] == "caught")
+    limits = sum(1 for r in rows if r["call"].startswith(("not tied", "false catch, flagged")))
+    note = (f"seed {seed}: {caught} of {real} catchable alerts caught, "
+            f"{sum(len(r['decoys']) for r in rows)} decoys, "
+            f"{sum(1 for r in rows if r['call'] == 'FALSE CATCH')} unflagged false catches, "
+            f"{limits} known-limit case(s)")
+    return fails, note, rows
+
+
+def s_playground():
+    """Random steps, hidden defence behaviour and decoy alerts; a referee scores the ants."""
+    import random
+    seed = int(os.environ.get("PLAYGROUND_SEED") or random.SystemRandom().randrange(1, 10 ** 6))
+    fails, note, _ = run_playground(seed)
+    return fails, note
+
+
+def playground_many(count, first_seed=1):
+    """Many blind runs in one process; prints a tally and every wrong call."""
+    tally, wrong = {}, []
+    for seed in range(first_seed, first_seed + count):
+        TELEMETRY.splunk_rows.clear()
+        TELEMETRY.falcon_alerts.clear()
+        fails, _, rows = run_playground(seed, work=WORK / f"seed-{seed}")
+        for row in rows:
+            tally[row["call"]] = tally.get(row["call"], 0) + 1
+        wrong += [f"seed {seed}: {f}" for f in fails]
+    return tally, wrong
 
 
 def s_search_changes():
@@ -970,6 +1201,7 @@ def s_drift():
 
 
 SCENARIOS = {
+    "playground": ("Playground: blind run with decoys", s_playground),
     "threat_scenario": ("Scenario from OpenCTI, built and run", s_threat_scenario),
     "scenario_guards": ("Scenario builder: what it refuses", s_scenario_guards),
     "full_run": ("All ants, one run", s_full_run),
@@ -1018,6 +1250,20 @@ def main():
         print(json.dumps([{"id": k, "title": v[0], "blurb": (v[1].__doc__ or "").strip()}
                           for k, v in SCENARIOS.items()]))
         sys.exit(0)
+    if SCENARIO == "playground_many":
+        logging.basicConfig(level=logging.CRITICAL)
+        start(SplunkMock, SPLUNK_PORT), start(FalconMock, FALCON_PORT)
+        count = int(sys.argv[2]) if len(sys.argv) > 2 else 50
+        global emit
+        emit = lambda *a, **k: None                      # quiet: only the tally matters
+        import contextlib
+        with contextlib.redirect_stdout(io.StringIO()):
+            tally, wrong = playground_many(count, int(sys.argv[3]) if len(sys.argv) > 3 else 1)
+        print(f"{count} blind runs, {sum(tally.values())} steps")
+        for call, n in sorted(tally.items(), key=lambda kv: -kv[1]):
+            print(f"  {n:5d}  {call}")
+        print("\n".join(wrong) if wrong else "no wrong calls")
+        sys.exit(1 if wrong else 0)
     if SCENARIO not in SCENARIOS:
         print(f"unknown scenario {SCENARIO!r}; choose one of: all, {', '.join(SCENARIOS)}")
         sys.exit(2)

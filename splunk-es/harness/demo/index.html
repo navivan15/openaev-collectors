@@ -487,8 +487,8 @@ async function renderMain(animate) {
 
 
 /* ---------- full pipeline (all ants) ---------- */
-const ANTS = ["Intel", "Scenario builder", "Planner", "Gatekeeper", "Agent", "Splunk observer", "Falcon observer", "Analyst", "Matcher", "Reporter"];
-const OPTIONAL_ANTS = ["Intel", "Scenario builder"];   // only shown when a run starts from OpenCTI
+const ANTS = ["Intel", "Scenario builder", "Planner", "Gatekeeper", "Agent", "Splunk observer", "Falcon observer", "Analyst", "Matcher", "Reporter", "Referee"];
+const OPTIONAL_ANTS = ["Intel", "Scenario builder", "Referee"];   // only shown when a run starts from OpenCTI
 const COVERAGE_CLASS = { simulated: "det", partial: "prv", "not simulated": "cnc", "no action": "mis" };
 function pipelineRuns(events) {
   const runs = [];
@@ -509,6 +509,7 @@ function antStages(run, upTo) {
       const cls = !mine.length ? "" : bad ? (bad.status === "none" ? "none" : "stop") : "done";
       const status = !mine.length ? "waiting" : name === "Gatekeeper" && bad ? "refused something"
         : name === "Scenario builder" && bad ? "some not testable"
+        : name === "Referee" ? (bad ? "found a wrong call" : "all calls right")
         : bad ? (bad.status === "none" ? "regression" : "could not check") : "done";
       return el("div", { class: "stage " + cls }, el("div", { class: "l", text: name }), el("div", { class: "s", text: status }));
     }));
@@ -550,6 +551,14 @@ function scoreCard(end) {
   const table = (title, heads, rows) => card.append(el("div", { class: "body", style: "padding-top:0" }, el("div", { class: "fact" },
     el("div", { class: "k", text: title }), el("div", { class: "tbl-wrap" }, el("table", {},
       el("thead", {}, el("tr", {}, heads.map((h) => el("th", { text: h })))), el("tbody", {}, rows))))));
+  if (r.referee) table(`Blind check (seed ${r.referee.seed}): what really happened against what the ants said`,
+    ["Step", "What really happened (hidden from the ants)", "Decoys mixed in", "Right answer", "Ants said", "Referee"],
+    r.referee.rows.map((x) => el("tr", {},
+      el("td", {}, b(x.test_id), el("div", { class: "d", text: x.host })), el("td", { text: x.happened }),
+      el("td", {}, x.decoys.length ? x.decoys.map((d) => el("div", { text: d })) : "none"),
+      el("td", {}, el("span", { class: "chip " + OUTCOME_CLASS[x.should], text: x.should })),
+      el("td", {}, el("span", { class: "chip " + OUTCOME_CLASS[x.said], text: x.said })),
+      el("td", {}, el("span", { class: "chip " + (!x.ok ? "bad" : x.call === "caught" ? "det" : x.call.startsWith("correct") ? "neu" : "cnc"), text: x.call })))));
   if (r.scenario && r.scenario.coverage) table(`Scenario coverage: ${r.scenario.name} (approved by ${r.scenario.approved_by})`,
     ["Technique", "Tactic", "Covered", "How, or why not"], r.scenario.coverage.map((c) => el("tr", {},
       el("td", {}, b(c.technique), el("div", { class: "d", text: c.name })), el("td", { text: c.tactic || "–" }),
