@@ -253,6 +253,11 @@ class ProcessingSummary(BaseModel):
     valid: int = Field(..., description="Number of valid expectations")
     invalid: int = Field(..., description="Number of invalid expectations")
     skipped: int = Field(..., description="Number of skipped expectations")
+    deferred: int = Field(
+        0,
+        description="Expectations not searched this cycle because their alerts "
+        "are not due yet (no verdict written)",
+    )
     outcomes: dict[str, int] = Field(
         default_factory=dict,
         description="Count per outcome (Detected / Prevented / Missed / Could not check)",

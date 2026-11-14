@@ -68,6 +68,7 @@ class GenericExpectationManager:
         self.logger = logging.getLogger(__name__)
         self.oaev_api = oaev_api
         self.collector_id = collector_id
+        self.expectation_metadata: dict[str, dict[str, Any]] = {}
         self.expectation_handler = expectation_handler
         self.trace_manager = TraceManager(
             oaev_api=oaev_api,
@@ -130,9 +131,20 @@ class GenericExpectationManager:
             self.logger.debug(
                 f"{LOG_PREFIX} Processing expectations through handler..."
             )
+            set_metadata = getattr(
+                self.expectation_handler, "set_expectation_metadata", None
+            )
+            if callable(set_metadata):
+                set_metadata(self.expectation_metadata)
             results = self.expectation_handler.handle_batch_expectations(
                 supported_expectations, detection_helper
             )
+            deferred_count = max(0, supported_count - len(results))
+            if deferred_count:
+                self.logger.info(
+                    f"{LOG_PREFIX} {deferred_count} expectation(s) deferred to a "
+                    f"later cycle (alerts not due yet); no verdict written"
+                )
 
             self.logger.debug(f"{LOG_PREFIX} Updating expectations in OpenAEV...")
             self._bulk_update_expectations(results)
@@ -159,6 +171,7 @@ class GenericExpectationManager:
                 invalid=invalid_count,
                 skipped=skipped_count,
                 outcomes=outcome_counts,
+                deferred=deferred_count,
             )
 
             self.logger.info(
@@ -180,6 +193,49 @@ class GenericExpectationManager:
             raise ExpectationProcessingError(
                 f"Unexpected error processing expectations: {e}"
             ) from e
+
+    def _fetch_expectation_models(
+        self,
+    ) -> list[DetectionExpectation | PreventionExpectation]:
+        """Fetch pending expectations and keep their raw OpenAEV fields.
+
+        The pyoaev models only keep the id and the signatures. The raw
+        payload also names the asset, agent, inject and expectation name,
+        which the service uses as a stable key for its location memory.
+        """
+        api = self.oaev_api.inject_expectation
+        try:
+            raw = api.expectations_assets_for_source(source_id=self.collector_id)
+            models: list[DetectionExpectation | PreventionExpectation] = []
+            metadata: dict[str, dict[str, Any]] = {}
+            for item in raw or []:
+                cls = (
+                    DetectionExpectation
+                    if item.get("inject_expectation_type") == "DETECTION"
+                    else PreventionExpectation
+                )
+                model = cls(**item, api_client=api)
+                models.append(model)
+                metadata[str(model.inject_expectation_id)] = {
+                    key: item.get(key)
+                    for key in (
+                        "inject_expectation_name",
+                        "inject_expectation_asset",
+                        "inject_expectation_agent",
+                        "inject_expectation_inject",
+                        "inject_expectation_exercise",
+                    )
+                }
+            self.expectation_metadata = metadata
+            return models
+        except Exception as e:
+            self.logger.debug(
+                f"{LOG_PREFIX} Raw expectation fetch failed ({e}); using models only"
+            )
+            self.expectation_metadata = {}
+            return api.expectations_models_for_source(  # type: ignore[no-any-return]
+                source_id=self.collector_id
+            )
 
     def _bulk_update_expectations(self, results: list[ExpectationResult]) -> None:
         """Bulk update expectations in OpenAEV.
@@ -447,11 +503,7 @@ class GenericExpectationManager:
             )
 
             try:
-                expectations = (
-                    self.oaev_api.inject_expectation.expectations_models_for_source(
-                        source_id=self.collector_id
-                    )
-                )
+                expectations = self._fetch_expectation_models()
             except Exception as e:
                 self.logger.warning(
                     f"{LOG_PREFIX} Error fetching expectations: {e}, retrying..."
@@ -488,11 +540,7 @@ class GenericExpectationManager:
         )
 
         try:
-            final_expectations = (
-                self.oaev_api.inject_expectation.expectations_models_for_source(
-                    source_id=self.collector_id
-                )
-            )
+            final_expectations = self._fetch_expectation_models()
         except Exception as e:
             self.logger.error(f"{LOG_PREFIX} Final expectations fetch failed: {e}")
             return []

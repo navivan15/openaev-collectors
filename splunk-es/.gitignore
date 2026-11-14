@@ -8,3 +8,7 @@ __pycache__
 .ruff_cache
 .mypy_cache
 .pytest_cache
+
+# Location memory (holds index / sourcetype / asset names from your environment)
+splunkes_location_memory.json
+splunkes_location_memory.json.tmp

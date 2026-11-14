@@ -26,6 +26,7 @@ from .exception import (
     SplunkESValidationError,
 )
 from .models import SplunkESAlert, SplunkESResponse, SplunkESSearchCriteria
+from .spl_validator import validate_spl
 from .step_matching import markers_from_parent_process
 from .utils.parent_process_parser import ParentProcessParser
 
@@ -43,7 +44,7 @@ INDEX_CHECK_TTL_SECONDS = 300
 # ID) even when it has no IP fields - e.g. an EDR process event. It renders to
 # an empty string when the step has no marker, leaving the legacy filter as is.
 DEFAULT_QUERY_TEMPLATE = (
-    "index={alerts_index} "
+    "index={alerts_index} {sourcetype_filter} "
     "((("
     "(src_ip IN ({source_ips}) OR src IN ({source_ips}) OR source_ip IN ({source_ips}) OR client_ip IN ({source_ips})) "
     "(dst_ip IN ({target_ips}) OR dest IN ({target_ips}) OR dest_ip IN ({target_ips}) "
@@ -73,6 +74,7 @@ ALLOWED_PLACEHOLDERS = {
     "start_date",
     "end_date",
     "step_marker_clause",
+    "sourcetype_filter",
 }
 
 
@@ -161,6 +163,14 @@ class SplunkESClientAPI:
             raise SplunkESSessionError(f"Failed to create HTTP session: {e}") from e
 
         self._index_checked_at: float | None = None
+        # Number of searches actually sent to Splunk by this client.
+        self.search_count = 0
+        raw_sourcetypes = getattr(self.config.splunk_es, "sourcetypes", "*")
+        self.sourcetypes = [
+            s.strip()
+            for s in str(raw_sourcetypes or "*").split(",")
+            if s.strip()
+        ] or ["*"]
 
         self.logger.info(f"{LOG_PREFIX} Splunk ES API client initialized successfully")
 
@@ -438,7 +448,34 @@ class SplunkESClientAPI:
 
         try:
             spl_query = self._build_spl_query(search_criteria, extend_end_seconds)
+            return self.run_search(spl_query)
 
+        except (
+            SplunkESValidationError,
+            SplunkESQueryError,
+            SplunkESAuthenticationError,
+            SplunkESAPIError,
+            SplunkESNetworkError,
+        ):
+            raise
+        except Exception as e:
+            raise SplunkESQueryError(f"Unexpected error executing query: {e}") from e
+
+    def run_search(self, spl_query: str) -> list[SplunkESAlert]:
+        """Validate one SPL search, send it as a oneshot job and parse the rows.
+
+        The validator runs first: a refused search is never sent.
+
+        Raises:
+            SplunkESQueryRefusedError: The search is not allowed (nothing sent).
+            SplunkESAuthenticationError: Credentials rejected.
+            SplunkESNetworkError: Splunk unreachable.
+            SplunkESAPIError / SplunkESQueryError: The search failed.
+
+        """
+        validate_spl(spl_query)
+
+        try:
             self.logger.debug(f"{LOG_PREFIX} Executing SPL query: {spl_query}")
 
             endpoint = f"{self.base_url}/services/search/jobs"
@@ -450,6 +487,7 @@ class SplunkESClientAPI:
                 "count": "0",
             }
 
+            self.search_count += 1
             response = self.session.post(
                 endpoint, data=params, timeout=REQUEST_TIMEOUT_SECONDS
             )
@@ -725,6 +763,7 @@ class SplunkESClientAPI:
             step_marker_clause = self._build_step_marker_clause(
                 search_criteria.parent_process_names or []
             )
+            sourcetype_filter = self._build_sourcetype_filter(self.sourcetypes)
             time_window_seconds = int(self.time_window.total_seconds())
             earliest_seconds = time_window_seconds + extend_end_seconds
 
@@ -756,6 +795,7 @@ class SplunkESClientAPI:
                 start_date=start_date_str,
                 end_date=end_date_str,
                 step_marker_clause=step_marker_clause,
+                sourcetype_filter=sourcetype_filter,
             )
 
             # Normalize whitespace: collapse runs of spaces caused by empty placeholders.
@@ -830,6 +870,14 @@ class SplunkESClientAPI:
         if url_path_conditions:
             return f"({' OR '.join(url_path_conditions)})"
         return ""
+
+    @staticmethod
+    def _build_sourcetype_filter(sourcetypes: list[str]) -> str:
+        """Build the sourcetype filter from the configured sourcetype list."""
+        names = [s.replace('"', "") for s in sourcetypes if s] or ["*"]
+        if names == ["*"]:
+            return "sourcetype=*"
+        return "sourcetype IN (" + ",".join(f'"{n}"' for n in names) + ")"
 
     @staticmethod
     def _build_step_marker_clause(parent_process_names: list[str]) -> str:

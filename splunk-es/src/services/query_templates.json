@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "templates": [
+    {
+      "id": "wide_step_search",
+      "purpose": "wide",
+      "description": "One search for every step of a run: the configured index and sourcetype(s), any event carrying a step marker, or (for steps with IP signatures only) the step's IP pair.",
+      "spl": "index={index} {sourcetype_filter} ({step_filter}) earliest={earliest} latest={latest} | table {fields} | sort 0 -_time | head {limit}",
+      "proven": {
+        "against": "mock_e2e_harness",
+        "on": "2026-11-14",
+        "sample_rows": 0
+      }
+    },
+    {
+      "id": "narrow_location_search",
+      "purpose": "narrow",
+      "description": "One search over the remembered locations only: the exact index and sourcetype where a detection was found before, the step markers, and a tight time window.",
+      "spl": "({location_filter}) earliest={earliest} latest={latest} | table {fields} | sort 0 -_time | head {limit}",
+      "proven": {
+        "against": "mock_e2e_harness",
+        "on": "2026-11-14",
+        "sample_rows": 0
+      }
+    }
+  ]
+}

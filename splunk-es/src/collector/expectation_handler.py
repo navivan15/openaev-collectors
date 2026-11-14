@@ -137,6 +137,12 @@ class GenericExpectationHandler:
             )
             raise
 
+    def set_expectation_metadata(self, metadata: dict[str, dict[str, Any]]) -> None:
+        """Pass the raw OpenAEV expectation fields on to the service provider."""
+        setter = getattr(self.service_provider, "set_expectation_metadata", None)
+        if callable(setter):
+            setter(metadata)
+
     def handle_batch_expectations(
         self,
         expectations: list[Any],

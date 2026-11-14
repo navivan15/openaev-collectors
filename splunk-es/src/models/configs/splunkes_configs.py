@@ -77,6 +77,41 @@ class _ConfigLoaderSplunkES(ConfigBaseSettings):
         description="Slack after the step's end_date when tying an alert to a "
         "step (correlation searches often stamp alerts a few minutes later).",
     )
+    sourcetypes: str = Field(
+        alias="SPLUNKES_SOURCETYPES",
+        default="*",
+        description="Comma-separated sourcetype(s) the wide search is limited to. "
+        "'*' searches every sourcetype of the alerts index (slower).",
+    )
+    alert_delay: timedelta = Field(
+        alias="SPLUNKES_ALERT_DELAY",
+        default=timedelta(seconds=30),
+        description="How long after a step ends its alerts usually take to be "
+        "searchable. A step is not searched before this has passed.",
+    )
+    search_limit: int = Field(
+        alias="SPLUNKES_SEARCH_LIMIT",
+        default=1000,
+        description="Maximum rows a single search returns.",
+    )
+    memory_path: Optional[str] = Field(
+        alias="SPLUNKES_MEMORY_PATH",
+        default="splunkes_location_memory.json",
+        description="Local file remembering where each test's detection was "
+        "found. Empty disables the memory.",
+    )
+    memory_ttl: timedelta = Field(
+        alias="SPLUNKES_MEMORY_TTL",
+        default=timedelta(days=30),
+        description="A remembered location older than this is dropped and must "
+        "be found by a wide search again.",
+    )
+    memory_wide_every: int = Field(
+        alias="SPLUNKES_MEMORY_WIDE_EVERY",
+        default=5,
+        description="Every Nth run of a test searches wide even when a "
+        "remembered location exists (1 = always wide).",
+    )
     query_template: Optional[str] = Field(
         alias="SPLUNKES_QUERY_TEMPLATE",
         default=None,

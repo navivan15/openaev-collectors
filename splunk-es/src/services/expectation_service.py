@@ -6,7 +6,8 @@ how to fetch data, and how to process expectations.
 """
 
 import logging
-from datetime import timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from pyoaev.apis.inject_expectation.model import (  # type: ignore[import-untyped]
@@ -35,7 +36,16 @@ from .exception import (
     SplunkESServiceError,
     SplunkESValidationError,
 )
-from .step_matching import StepContext
+from .location_memory import LocationMemory
+from .query_writer import (
+    QueryWriter,
+    TemplateStore,
+    is_safe_field,
+    is_safe_index,
+    is_safe_sourcetype,
+)
+from .spl_validator import SplunkESQueryRefusedError
+from .step_matching import KEY_SOURCE, KEY_TIME, StepContext, parse_time
 
 LOG_PREFIX = "[SplunkESExpectationService]"
 
@@ -108,6 +118,11 @@ class SplunkESExpectationService:
                 f"{LOG_PREFIX} No time_window configured, using default 1 hour"
             )
 
+        self.expectation_metadata: dict[str, dict[str, Any]] = {}
+        self.last_cycle: dict[str, Any] = {}
+        self._memory: LocationMemory | None = None
+        self._writer: QueryWriter | None = None
+
         splunk_cfg = getattr(config, "splunk_es", None)
         before = getattr(splunk_cfg, "match_window_before", None)
         after = getattr(splunk_cfg, "match_window_after", None)
@@ -145,7 +160,370 @@ class SplunkESExpectationService:
         )
         return self.SUPPORTED_SIGNATURES
 
+    # ------------------------------------------------------------------
+    # Batched flow: one narrow search over remembered locations, then one
+    # wide search for everything else. See README "Query writer" and
+    # "Location memory".
+    # ------------------------------------------------------------------
+
+    def set_expectation_metadata(self, metadata: dict[str, dict[str, Any]]) -> None:
+        """Receive the raw OpenAEV fields per expectation id (asset, name, ...)."""
+        self.expectation_metadata = metadata or {}
+
     def handle_batch_expectations(
+        self,
+        expectations: list[DetectionExpectation | PreventionExpectation],
+        detection_helper: OpenAEVDetectionHelper,
+    ) -> list[ExpectationResult]:
+        """Handle a batch of expectations.
+
+        Default: all detection expectations of the cycle share one narrow
+        search (remembered locations) and one wide search. When a custom
+        ``SPLUNKES_QUERY_TEMPLATE`` is configured, each expectation is searched
+        on its own with that template (still checked by the validator).
+        """
+        if not expectations:
+            self.logger.info(f"{LOG_PREFIX} No expectations to process")
+            return []
+        if getattr(getattr(self.config, "splunk_es", None), "query_template", None):
+            return self._handle_batch_per_step(expectations, detection_helper)
+        try:
+            return self._handle_batch_planned(expectations, detection_helper)
+        except SplunkESServiceError:
+            raise
+        except Exception as e:
+            raise SplunkESExpectationError(
+                f"Error in handle_batch_expectations: {e}"
+            ) from e
+
+    def _get_memory(self) -> LocationMemory:
+        if self._memory is None:
+            cfg = getattr(self.config, "splunk_es", None)
+            self._memory = LocationMemory(
+                getattr(cfg, "memory_path", None),
+                ttl=getattr(cfg, "memory_ttl", timedelta(days=30)),
+                wide_every=getattr(cfg, "memory_wide_every", 5),
+            )
+        return self._memory
+
+    def _get_writer(self) -> QueryWriter:
+        if self._writer is None:
+            cfg = getattr(self.config, "splunk_es", None)
+            self._writer = QueryWriter(
+                TemplateStore(),
+                index=self.client_api.alerts_index,
+                sourcetypes=self.client_api.sourcetypes,
+                limit=getattr(cfg, "search_limit", 1000),
+            )
+        return self._writer
+
+    def _memory_key(
+        self, expectation: DetectionExpectation, ctx: StepContext
+    ) -> str | None:
+        """Stable key for "the same test" across runs.
+
+        OpenAEV gives each run new inject IDs, and the expectation payload has
+        no test / payload identifier, so the key is the target asset plus the
+        expectation name. Several tests on one asset share one entry.
+        """
+        meta = self.expectation_metadata.get(str(expectation.inject_expectation_id), {})
+        asset = (
+            meta.get("inject_expectation_asset")
+            or (ctx.hostnames[0].strip().lower() if ctx.hostnames else None)
+            or (ctx.target_ips[0] if ctx.target_ips else None)
+            or (ctx.source_ips[0] if ctx.source_ips else None)
+        )
+        if not asset:
+            return None
+        name = str(meta.get("inject_expectation_name") or "").strip().lower()
+        return f"asset:{asset}|expectation:{name}"
+
+    def _is_due(
+        self, ctx: StepContext, usual_delay: float | None, now: datetime
+    ) -> bool:
+        """A step is searched only after its alerts had time to arrive."""
+        cfg = getattr(self.config, "splunk_es", None)
+        margin = getattr(cfg, "alert_delay", timedelta(seconds=30))
+        if not isinstance(margin, timedelta):
+            margin = timedelta(seconds=30)
+        if usual_delay is not None and ctx.start is not None:
+            return now >= ctx.start + timedelta(seconds=usual_delay) + margin
+        reference = ctx.end or ctx.start
+        return reference is None or now >= reference + margin
+
+    def _safe_process(
+        self,
+        expectation: Any,
+        detection_helper: OpenAEVDetectionHelper,
+    ) -> ExpectationResult:
+        """Process one expectation on its own, turning errors into results."""
+        try:
+            return self.process_expectation(expectation, detection_helper)
+        except SplunkESServiceError as e:
+            return self._create_error_result_object(e, expectation)
+        except Exception as e:
+            return self._create_error_result_object(
+                SplunkESExpectationError(f"Unexpected error: {e}"), expectation
+            )
+
+    def _handle_batch_planned(
+        self,
+        expectations: list[DetectionExpectation | PreventionExpectation],
+        detection_helper: OpenAEVDetectionHelper,
+    ) -> list[ExpectationResult]:
+        results: dict[int, ExpectationResult] = {}
+        steps: list[dict[str, Any]] = []
+        deferred = 0
+        now = datetime.now(timezone.utc)
+        memory = self._get_memory()
+
+        for pos, expectation in enumerate(expectations):
+            if not isinstance(expectation, DetectionExpectation):
+                # Prevention (-> Could not check) and unknown types.
+                results[pos] = self._safe_process(expectation, detection_helper)
+                continue
+            try:
+                _, matching_signatures = self._extract_signatures(expectation)
+                ctx = self._build_step_context(expectation)
+                if not ctx.markers and not ctx.ips:
+                    raise SplunkESExpectationError(
+                        "Expectation has no step marker and no IP signature to search for"
+                    )
+            except SplunkESServiceError as e:
+                results[pos] = self._create_error_result_object(e, expectation)
+                continue
+            key = self._memory_key(expectation, ctx)
+            if not self._is_due(ctx, memory.usual_delay(key), now):
+                deferred += 1
+                continue
+            locations, lookup = memory.lookup(key)
+            steps.append(
+                {
+                    "pos": pos,
+                    "expectation": expectation,
+                    "ctx": ctx,
+                    "matching": matching_signatures,
+                    "key": key,
+                    "locations": locations,
+                    "lookup": lookup,
+                }
+            )
+
+        self.last_cycle = {
+            "deferred": deferred,
+            "narrow_searches": 0,
+            "wide_searches": 0,
+            "lookups": {s["pos"]: s["lookup"] for s in steps},
+        }
+        if deferred:
+            self.logger.info(
+                f"{LOG_PREFIX} {deferred} expectation(s) not searched yet: their "
+                f"alerts have not had time to arrive"
+            )
+        if steps:
+            self._search_and_match(steps, detection_helper, results)
+        self.logger.info(
+            f"{LOG_PREFIX} Cycle searches: narrow={self.last_cycle['narrow_searches']} "
+            f"wide={self.last_cycle['wide_searches']} for {len(steps)} step(s)"
+        )
+        return [results[pos] for pos in sorted(results)]
+
+    def _fail_steps(
+        self,
+        steps: list[dict[str, Any]],
+        error: SplunkESServiceError,
+        results: dict[int, ExpectationResult],
+        search_path: str | None,
+    ) -> None:
+        for step in steps:
+            if step["pos"] in results:
+                continue
+            result = self._create_error_result_object(error, step["expectation"])
+            result.search_path = search_path
+            results[step["pos"]] = result
+
+    def _search_window(
+        self, steps: list[dict[str, Any]], tight: bool
+    ) -> tuple[datetime, datetime]:
+        """Time range covering all steps (tight = remembered delay only)."""
+        now = datetime.now(timezone.utc)
+        starts, ends = [], []
+        for step in steps:
+            ctx: StepContext = step["ctx"]
+            if ctx.window_start:
+                starts.append(ctx.window_start)
+            end = ctx.window_end
+            if tight and ctx.start is not None:
+                delays = [
+                    float(loc["delay_seconds"])
+                    for loc in step["locations"]
+                    if loc.get("delay_seconds") is not None
+                ]
+                tight_end = ctx.start + timedelta(
+                    seconds=2 * max(delays, default=0.0) + 60
+                )
+                if ctx.end is not None:
+                    tight_end = max(tight_end, ctx.end + timedelta(seconds=60))
+                end = min(end, tight_end) if end else tight_end
+            if end:
+                ends.append(end)
+        earliest = min(starts) if starts else now - self.time_window
+        latest = max(ends) if ends else now
+        return earliest, latest
+
+    def _try_match(
+        self,
+        oaev_data: list[dict[str, Any]],
+        step: dict[str, Any],
+        detection_helper: OpenAEVDetectionHelper,
+    ) -> tuple[dict[str, Any] | None, str]:
+        try:
+            hit = self._match(
+                oaev_data,
+                step["matching"],
+                detection_helper,
+                "detection",
+                step_context=step["ctx"],
+            )
+            return hit, ""
+        except SplunkESNoAlertsFoundError:
+            return None, "no_alerts"
+        except SplunkESNoMatchingAlertsError as e:
+            return None, e.reason
+
+    def _detected(
+        self, step: dict[str, Any], hit: dict[str, Any], search_path: str
+    ) -> ExpectationResult:
+        result = self._convert_dict_to_result(hit, step["expectation"])
+        result.search_path = search_path
+        self._remember(step, hit, search_path)
+        return result
+
+    def _remember(
+        self, step: dict[str, Any], hit: dict[str, Any], search_path: str
+    ) -> None:
+        """Record where this step's detection was found."""
+        item = (hit.get("matching_data") or [{}])[0]
+        source = item.get(KEY_SOURCE) or {}
+        index = source.get("index") or self.client_api.alerts_index
+        sourcetype = source.get("sourcetype")
+        if not (index and sourcetype):
+            return
+        if not is_safe_index(index) or not is_safe_sourcetype(sourcetype):
+            return
+        field = hit.get("match_field")
+        ctx: StepContext = step["ctx"]
+        alert_time = parse_time(item.get(KEY_TIME))
+        delay = (
+            max(0.0, (alert_time - ctx.start).total_seconds())
+            if alert_time and ctx.start
+            else None
+        )
+        self._get_memory().record(
+            step["key"],
+            index=index,
+            sourcetype=sourcetype,
+            field=field if field and is_safe_field(field) else None,
+            rule_name=source.get("rule_name"),
+            delay_seconds=delay,
+            search_path=search_path,
+        )
+
+    def _search_and_match(
+        self,
+        steps: list[dict[str, Any]],
+        detection_helper: OpenAEVDetectionHelper,
+        results: dict[int, ExpectationResult],
+    ) -> None:
+        try:
+            writer = self._get_writer()
+            self.client_api.ensure_index_available()
+        except SplunkESServiceError as e:
+            self._fail_steps(steps, e, results, None)
+            return
+
+        narrow = [s for s in steps if s["locations"]]
+        wide = [s for s in steps if not s["locations"]]
+
+        # --- narrow: remembered locations only, one search -------------------
+        if narrow:
+            try:
+                by_location: dict[tuple[str, str], list[StepContext]] = {}
+                for step in narrow:
+                    for loc in step["locations"]:
+                        by_location.setdefault(
+                            (loc["index"], loc["sourcetype"]), []
+                        ).append(step["ctx"])
+                earliest, latest = self._search_window(narrow, tight=True)
+                spl = writer.narrow(by_location, earliest, latest)
+                self.last_cycle["narrow_searches"] += 1
+                data = self.converter.convert_data_to_oaev_data(
+                    self.client_api.run_search(spl)
+                )
+                for step in narrow:
+                    hit, _ = self._try_match(data, step, detection_helper)
+                    if hit:
+                        results[step["pos"]] = self._detected(step, hit, "narrow")
+            except SplunkESServiceError as e:
+                if self._could_not_check_reason(e) in (
+                    CouldNotCheckReason.AUTH_FAILED,
+                    CouldNotCheckReason.SOURCE_UNREACHABLE,
+                    CouldNotCheckReason.QUERY_REFUSED,
+                ):
+                    # A broken connection is Could not check on this path too.
+                    self._fail_steps(narrow, e, results, "narrow")
+                else:
+                    self.logger.warning(
+                        f"{LOG_PREFIX} Narrow search failed ({e}); using the wide search"
+                    )
+            # Guard 1: not found in the remembered place -> wide search before
+            # the outcome may be Missed.
+            wide.extend(s for s in narrow if s["pos"] not in results)
+
+        # --- wide: configured index + sourcetypes, one search (+ retries) ----
+        if not wide:
+            return
+        pending = list(wide)
+        reasons: dict[int, str] = {}
+        try:
+            earliest, latest = self._search_window(wide, tight=False)
+            for attempt in range(int(self.max_retry) + 1):
+                if attempt:
+                    time.sleep(self.offset)
+                spl = writer.wide([s["ctx"] for s in pending], earliest, latest)
+                self.last_cycle["wide_searches"] += 1
+                data = self.converter.convert_data_to_oaev_data(
+                    self.client_api.run_search(spl)
+                )
+                still = []
+                for step in pending:
+                    hit, reason = self._try_match(data, step, detection_helper)
+                    if hit:
+                        results[step["pos"]] = self._detected(step, hit, "wide")
+                    else:
+                        reasons[step["pos"]] = reason
+                        still.append(step)
+                pending = still
+                if not pending:
+                    break
+        except SplunkESServiceError as e:
+            self._fail_steps(pending, e, results, "wide")
+            return
+
+        for step in pending:
+            reason = reasons.get(step["pos"], "no_alerts")
+            error: SplunkESServiceError = (
+                SplunkESNoAlertsFoundError("No data available for matching")
+                if reason == "no_alerts"
+                else SplunkESNoMatchingAlertsError(reason=reason)
+            )
+            result = self._create_error_result_object(error, step["expectation"])
+            result.search_path = "wide"
+            results[step["pos"]] = result
+            # Neither place has it: the remembered location is no longer true.
+            self._get_memory().forget(step["key"])
+
+    def _handle_batch_per_step(
         self,
         expectations: list[DetectionExpectation | PreventionExpectation],
         detection_helper: OpenAEVDetectionHelper,
@@ -895,6 +1273,8 @@ class SplunkESExpectationService:
         while current is not None and current not in chain:
             chain.append(current)
             current = current.__cause__ or current.__context__
+        if any(isinstance(e, SplunkESQueryRefusedError) for e in chain):
+            return CouldNotCheckReason.QUERY_REFUSED
         if any(isinstance(e, SplunkESAuthenticationError) for e in chain):
             return CouldNotCheckReason.AUTH_FAILED
         if any(isinstance(e, SplunkESIndexNotFoundError) for e in chain):

@@ -2,22 +2,22 @@
 End-to-end mock harness for the OpenAEV Splunk-ES collector.
 
 Runs the REAL collector code (client_api, expectation_service, converter,
-trace_service, expectation_manager) against two in-process mock HTTP servers:
+trace_service, expectation_manager, query writer, location memory) against two
+in-process mock HTTP servers:
 
-  * Mock Splunk ES  -> answers POST /services/search/jobs (SPL search) and
-                       GET /services/data/indexes/<name> (index check)
-  * Mock OpenAEV    -> answers the expectation + trace REST endpoints
+  * Mock Splunk  -> POST /services/search/jobs (SPL search) and
+                    GET /services/data/indexes/<name> (index check)
+  * Mock OpenAEV -> the expectation + trace REST endpoints
 
-No Docker, no real Splunk, no real OpenAEV, no real hosts. Everything runs in
-one process so we can watch the entire message flow.
+No Docker, no real Splunk, no real OpenAEV, no real hosts. All data is synthetic.
 
 Usage:
-  python harness/mock_e2e_harness.py <scenario>   # one scenario, verbose wire trace
-  python harness/mock_e2e_harness.py all          # every scenario, pass/fail table
+  python harness/mock_e2e_harness.py <scenario>        # one scenario, full wire trace
+  python harness/mock_e2e_harness.py all               # every scenario, pass/fail table
+  python harness/mock_e2e_harness.py prove_templates   # run the repo's query templates
+                                                       # against the mock and stamp them
 
-Each scenario asserts the outcome (Detected / Missed / Could not check), what
-was written back to OpenAEV, and where relevant the miss/could-not-check reason
-and the match method. Exit code is non-zero when any assertion fails.
+Every scenario asserts its result and the process exits non-zero on a mismatch.
 """
 
 import json
@@ -25,21 +25,22 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
 
 # make "src" importable exactly like the collector does
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-WIRE = []  # captured HTTP exchanges, in order
+SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "detected"
 
 
 def log_wire(system, direction, summary, body=None):
-    WIRE.append({"system": system, "dir": direction, "summary": summary, "body": body})
     arrow = "->" if direction == "req" else "<-"
     print(f"   [{system:8}] {arrow} {summary}")
     if body is not None:
@@ -50,10 +51,7 @@ def log_wire(system, direction, summary, body=None):
 
 
 # ----------------------------------------------------------------------------
-# Expected results per scenario
-#   outcome  : Detected | Missed | Could not check
-#   reason   : outcome_reason (None = not asserted)
-#   method   : match_method   (None = not asserted)
+# Single-step scenarios: expected outcome, reason, match method.
 # The verdict written to OpenAEV follows from the outcome:
 #   Detected -> 'Detected'/True, Missed -> 'Not Detected'/False,
 #   Could not check -> nothing written (left pending).
@@ -67,7 +65,7 @@ SCENARIOS = {
     "token":             {"outcome": "Detected"},
     "ip_only":           {"outcome": "Detected", "method": "legacy"},
     "ipv6":              {"outcome": "Detected", "method": "legacy"},
-    "late_alert":        {"outcome": "Detected"},
+    "late_alert":        {"outcome": "Detected", "searches": ["wide", "wide"]},
     # Known limit: an agentless step with only IP signatures has no marker, so a
     # stale alert sharing the IP pair still counts (legacy fallback).
     "ip_bleed":          {"outcome": "Detected", "method": "legacy"},
@@ -83,16 +81,18 @@ SCENARIOS = {
     "cnc_unreachable":   {"outcome": "Could not check", "reason": "source_unreachable"},
     "cnc_missing_index": {"outcome": "Could not check", "reason": "data_source_missing"},
     "cnc_search_error":  {"outcome": "Could not check", "reason": "search_failed"},
+    # connection drops on the search itself (index check answered fine)
+    "cnc_wide_conn":     {"outcome": "Could not check", "reason": "source_unreachable",
+                          "path": "wide", "searches": ["wide"]},
+    # a custom SPLUNKES_QUERY_TEMPLATE containing '| delete' is never sent
+    "query_refused":     {"outcome": "Could not check", "reason": "query_refused",
+                          "searches": []},
 }
 
-SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "detected"
-
 # ----------------------------------------------------------------------------
-# Shared test fixture: one simulated step (inject) and its detection expectation
+# Fixture: synthetic steps (injects) and their expectations
 # ----------------------------------------------------------------------------
-INJECT_UUID = "11111111-1111-1111-1111-111111111111"
 AGENT_UUID = "22222222-2222-2222-2222-222222222222"
-EXPECTATION_ID = str(uuid.uuid4())
 SRC_IP = "10.0.0.5"
 DST_IP = "10.0.0.9"
 SRC_IP6 = "2001:db8::5"
@@ -100,73 +100,88 @@ DST_IP6 = "2001:db8::9"
 STEP_HOST = "WS-TEST-01"          # host the simulated step ran on
 OTHER_HOST = "WS-OTHER-99"
 IS_V6 = SCENARIO == "ipv6"
-# Parent-process signature the platform emits encodes inject+agent UUIDs
-PARENT_PROCESS = f"oaev-implant-{INJECT_UUID}-agent-{AGENT_UUID}"
-# The collector reconstructs the parent process from this exact URL-path form
-IMPLANT_URL_PATH = f"/api/injects/{INJECT_UUID}/{AGENT_UUID}/executable-payload"
-# Step marker forms a benign simulation can carry
-MARKER_CMD = f"cmd.exe /c echo oaev-step-{INJECT_UUID}"
-MARKER_FILE = f"C:\\Temp\\oaev-step-{INJECT_UUID.replace('-', '')}.txt"
-MARKER_DNS = f"oaev-step-{INJECT_UUID}.sim.invalid"
 
 _now = datetime.now(timezone.utc)
-START_DATE = (_now - timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%S")
-END_DATE = (_now + timedelta(minutes=2)).strftime("%Y-%m-%dT%H:%M:%S")
-NOW_STR = _now.strftime("%Y-%m-%dT%H:%M:%S")
-LONG_AGO_STR = (_now - timedelta(minutes=40)).strftime("%Y-%m-%dT%H:%M:%S")
+FMT = "%Y-%m-%dT%H:%M:%S"
+START = _now - timedelta(minutes=4)
+END = _now - timedelta(minutes=1)
+START_DATE = START.strftime(FMT)
+END_DATE = END.strftime(FMT)
+ALERT_TIME = (START + timedelta(seconds=30)).strftime(FMT)   # alert 30 s into the step
+LONG_AGO_STR = (_now - timedelta(minutes=40)).strftime(FMT)
+
+
+def inject_uuid(n=1):
+    return f"{n:08d}-1111-1111-1111-111111111111"
+
+
+def parent_process(n=1):
+    """Implant name the platform emits; it encodes inject + agent IDs."""
+    return f"oaev-implant-{inject_uuid(n)}-agent-{AGENT_UUID}"
+
+
+def implant_url(n=1):
+    return f"/api/injects/{inject_uuid(n)}/{AGENT_UUID}/executable-payload"
+
+
+def marker_cmd(n=1):
+    return f"cmd.exe /c echo oaev-step-{inject_uuid(n)}"
+
+
+INJECT_UUID = inject_uuid(1)
+MARKER_FILE = f"C:\\Temp\\oaev-step-{INJECT_UUID.replace('-', '')}.txt"
+MARKER_DNS = f"oaev-step-{INJECT_UUID}.sim.invalid"
 
 IP_ONLY_SCENARIOS = ("ip_only", "ipv6", "ip_bleed")
 HOSTNAME_SCENARIOS = ("marker_match", "marker_file", "marker_dns", "marker_absent",
                       "time_window_miss", "wrong_host")
 
 
-def build_expectation_payload(kind="DETECTION", include_parent=True, include_host=False):
-    """The dict OpenAEV would return for a pending expectation.
-
-    include_parent=False models a network / agentless inject whose expectation
-    carries only IP signatures (no parent-process / implant signature).
-    """
+def expectation(n=1, kind="DETECTION", include_parent=True, include_host=False,
+                host=STEP_HOST, start=START_DATE, end=END_DATE):
+    """The dict OpenAEV returns for a pending expectation of step n."""
     if IS_V6:
-        sigs = [
-            {"type": "source_ipv6_address", "value": SRC_IP6},
-            {"type": "target_ipv6_address", "value": DST_IP6},
-        ]
+        sigs = [{"type": "source_ipv6_address", "value": SRC_IP6},
+                {"type": "target_ipv6_address", "value": DST_IP6}]
     else:
-        sigs = [
-            {"type": "source_ipv4_address", "value": SRC_IP},
-            {"type": "target_ipv4_address", "value": DST_IP},
-        ]
+        sigs = [{"type": "source_ipv4_address", "value": SRC_IP},
+                {"type": "target_ipv4_address", "value": DST_IP}]
     if include_parent:
-        sigs.append({"type": "parent_process_name", "value": PARENT_PROCESS})
+        sigs.append({"type": "parent_process_name", "value": parent_process(n)})
     if include_host:
-        sigs.append({"type": "target_hostname_address", "value": STEP_HOST})
-    sigs += [
-        {"type": "start_date", "value": START_DATE},
-        {"type": "end_date", "value": END_DATE},
-    ]
+        sigs.append({"type": "target_hostname_address", "value": host})
+    sigs += [{"type": "start_date", "value": start},
+             {"type": "end_date", "value": end}]
     return {
-        "inject_expectation_id": EXPECTATION_ID,
+        "inject_expectation_id": str(uuid.uuid4()),
         "inject_expectation_type": kind,
+        "inject_expectation_name": "Detection",
+        # OpenAEV gives every run new inject IDs; the asset ID is what stays.
+        "inject_expectation_inject": inject_uuid(n),
+        "inject_expectation_asset": f"asset-{host.lower()}",
         "inject_expectation_signatures": sigs,
     }
 
 
-def splunk_alert_row(match=True):
-    """A row as Splunk's search/jobs oneshot JSON would return it."""
+def memory_key(host=STEP_HOST):
+    return f"asset:asset-{host.lower()}|expectation:detection"
+
+
+# ---- rows the mock Splunk can return ---------------------------------------
+def splunk_alert_row(match=True, n=1):
     if match:
         return {
-            "_time": NOW_STR,
+            "_time": ALERT_TIME,
             "src_ip": SRC_IP6 if IS_V6 else SRC_IP,
             "dst_ip": DST_IP6 if IS_V6 else DST_IP,
-            "url_path": IMPLANT_URL_PATH,
-            "parent_process_name": PARENT_PROCESS,
+            "url_path": implant_url(n),
+            "parent_process_name": parent_process(n),
             "signature": "OpenAEV Implant Callback",
-            "rule_name": "ES - Suspicious Beacon",
-            "event_type": "notable",
+            "rule_name": "Suspicious Beacon",
             "severity": "high",
         }
     return {
-        "_time": NOW_STR,
+        "_time": ALERT_TIME,
         "src_ip": "192.168.254.254",
         "dst_ip": "192.168.254.253",
         "parent_process_name": "explorer.exe",
@@ -175,45 +190,35 @@ def splunk_alert_row(match=True):
 
 
 def stale_ip_alert_row():
-    """An alert that shares only the IP pair - e.g. a beacon from a PRIOR run of the
-    same action, with NO per-execution implant marker (url_path)."""
-    return {
-        "_time": NOW_STR,
-        "src_ip": SRC_IP,
-        "dst_ip": DST_IP,
-        "signature": "Prior-run beacon (no implant marker)",
-        "event_type": "notable",
-    }
+    """Shares only the IP pair - e.g. a beacon from a PRIOR run, no marker."""
+    return {"_time": ALERT_TIME, "src_ip": SRC_IP, "dst_ip": DST_IP,
+            "signature": "Prior-run beacon (no implant marker)"}
 
 
-def implant_url_row():
+def implant_url_row(n=1):
     """Proxy/web log of the implant callback: URL + IPs, no process fields."""
-    return {
-        "_time": NOW_STR,
-        "src_ip": SRC_IP,
-        "dst_ip": DST_IP,
-        "url_path": IMPLANT_URL_PATH,
-        "signature": "Proxy - implant download",
-    }
+    return {"_time": ALERT_TIME, "src_ip": SRC_IP, "dst_ip": DST_IP,
+            "url_path": implant_url(n), "signature": "Proxy - implant download"}
 
 
-def marker_row(host=STEP_HOST, when=None, **fields):
-    """EDR-style alert: no IP fields, host name + a field carrying the marker."""
+def marker_row(host=STEP_HOST, when=None, sourcetype="XmlWinEventLog", **fields):
+    """Endpoint event from a plain index: host name + a field carrying the marker."""
     row = {
-        "_time": when or NOW_STR,
+        "_time": when or ALERT_TIME,
+        "index": "main",
+        "sourcetype": sourcetype,
         "dest_host": f"{host.lower()}.lab.local",
-        "signature": "EDR - suspicious command",
-        "rule_name": "ES - Endpoint Suspicious Command",
-        "event_type": "notable",
+        "signature": "Suspicious command line",
+        "rule_name": "Endpoint Suspicious Command",
     }
     row.update(fields)
     return row
 
 
-def splunk_rows():
-    """Rows the mock Splunk returns for the current scenario."""
+def single_step_rows(kind, call_no):
+    """Rows for the single-step scenarios."""
     if SCENARIO == "late_alert":
-        return [] if SPLUNK_CALLS["n"] < 2 else [splunk_alert_row(match=True)]
+        return [] if call_no < 2 else [splunk_alert_row(match=True)]
     if SCENARIO == "ip_bleed":
         return [stale_ip_alert_row()]
     if SCENARIO == "not_detected":
@@ -221,7 +226,7 @@ def splunk_rows():
     if SCENARIO == "implant_url":
         return [implant_url_row()]
     if SCENARIO == "marker_match":
-        return [marker_row(process=MARKER_CMD)]
+        return [marker_row(process=marker_cmd())]
     if SCENARIO == "marker_file":
         return [marker_row(file_name=MARKER_FILE)]
     if SCENARIO == "marker_dns":
@@ -232,19 +237,25 @@ def splunk_rows():
         row.update({"src_ip": SRC_IP, "dst_ip": DST_IP})
         return [row]
     if SCENARIO == "time_window_miss":
-        return [marker_row(when=LONG_AGO_STR, process=MARKER_CMD)]
+        return [marker_row(when=LONG_AGO_STR, process=marker_cmd())]
     if SCENARIO == "wrong_host":
-        return [marker_row(host=OTHER_HOST, process=MARKER_CMD)]
+        return [marker_row(host=OTHER_HOST, process=marker_cmd())]
     return [splunk_alert_row(match=True)]
 
 
-# call counter so "late_alert" can return empty first, then a match on retry
-SPLUNK_CALLS = {"n": 0}
+# ----------------------------------------------------------------------------
+# Mutable mock state (multi-run scenarios change it between cycles)
+# ----------------------------------------------------------------------------
+STATE = {
+    "expectations": [],          # what the mock OpenAEV hands out
+    "rows": single_step_rows,    # fn(kind, call_no) -> rows; kind = narrow | wide
+    "searches": [],              # kind of every search POST that reached Splunk
+    "spl": [],                   # the SPL of every search POST
+    "drop_search": False,        # close the connection on a search POST
+}
+CAPTURED = {"bulk_update": None, "individual": [], "traces": None, "results": []}
 
 
-# ----------------------------------------------------------------------------
-# Mock Splunk ES
-# ----------------------------------------------------------------------------
 class SplunkHandler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
@@ -287,35 +298,40 @@ class SplunkHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self._auth_ok():
             return
-        if SCENARIO == "token":
-            print(f"              (authenticated via {self.headers.get('Authorization', '')[:20]}...)")
         length = int(self.headers.get("Content-Length", 0))
         raw = self.rfile.read(length).decode()
-
-        # decode the SPL query that the collector actually built
-        from urllib.parse import parse_qs
         spl = parse_qs(raw).get("search", [""])[0]
-        log_wire("SPLUNK", "req", f"POST {self.path}  exec_mode=oneshot")
+        if spl.startswith("search "):
+            spl = spl[7:]
+        kind = "narrow" if spl.lstrip().startswith("(") else "wide"
+        STATE["searches"].append(kind)
+        STATE["spl"].append(spl)
+        log_wire("SPLUNK", "req", f"POST {self.path}  exec_mode=oneshot  [{kind} search]")
         print(f"              SPL: {spl}")
 
-        SPLUNK_CALLS["n"] += 1
+        if STATE["drop_search"]:
+            # Simulate a connection that breaks mid-request: no response at all.
+            log_wire("SPLUNK", "res", "(connection dropped)")
+            self.close_connection = True
+            try:
+                self.connection.shutdown(2)
+            except OSError:
+                pass
+            return
         if SCENARIO == "cnc_search_error":
             payload = {"results": [], "messages": [
                 {"type": "ERROR", "text": "Error in 'search' command: search failed"}]}
             self._send_json(200, payload)
             log_wire("SPLUNK", "res", "200 OK (0 rows, ERROR message)", payload["messages"])
             return
-        results = splunk_rows()
+        results = [dict(r) for r in STATE["rows"](kind, len(STATE["searches"]))]
+        for row in results:   # every real row has these; default them for old fixtures
+            row.setdefault("index", "main")
+            row.setdefault("sourcetype", "mock:events")
         payload = {"results": results,
                    "fields": [{"name": k} for k in results[0].keys()] if results else []}
         self._send_json(200, payload)
         log_wire("SPLUNK", "res", f"200 OK ({len(results)} row(s))", results)
-
-
-# ----------------------------------------------------------------------------
-# Mock OpenAEV
-# ----------------------------------------------------------------------------
-CAPTURED = {"bulk_update": None, "individual": [], "traces": None, "results": []}
 
 
 class OpenAEVHandler(BaseHTTPRequestHandler):
@@ -324,9 +340,7 @@ class OpenAEVHandler(BaseHTTPRequestHandler):
 
     def _read(self):
         length = int(self.headers.get("Content-Length", 0))
-        if length:
-            return json.loads(self.rfile.read(length).decode())
-        return None
+        return json.loads(self.rfile.read(length).decode()) if length else None
 
     def _send(self, code, obj):
         body = json.dumps(obj).encode()
@@ -337,15 +351,10 @@ class OpenAEVHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if "/injects/expectations/assets/" in self.path:
-            kind = "PREVENTION" if SCENARIO == "prevention" else "DETECTION"
-            payload = [build_expectation_payload(
-                kind,
-                include_parent=(SCENARIO not in IP_ONLY_SCENARIOS),
-                include_host=(SCENARIO in HOSTNAME_SCENARIOS),
-            )]
+            payload = STATE["expectations"]
             log_wire("OPENAEV", "req", f"GET {self.path}")
             self._send(200, payload)
-            log_wire("OPENAEV", "res", f"200 OK (1 pending {kind} expectation)", payload)
+            log_wire("OPENAEV", "res", f"200 OK ({len(payload)} pending expectation(s))", payload)
             return
         self._send(200, [])
 
@@ -371,88 +380,41 @@ class OpenAEVHandler(BaseHTTPRequestHandler):
             self._send(200, {})
 
 
-def start(server_cls, handler, port):
-    srv = server_cls(("127.0.0.1", port), handler)
+def start(handler, port):
+    srv = ThreadingHTTPServer(("127.0.0.1", port), handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     return srv
 
 
-def check(expected, result, verdict):
-    """Compare the observed run with the expected result. Returns failure list."""
-    failures = []
-    if result is None:
-        return ["no ExpectationResult produced"]
-    outcome = result.outcome.value if result.outcome else None
-    if outcome != expected["outcome"]:
-        failures.append(f"outcome={outcome!r}, expected {expected['outcome']!r}")
-    if "reason" in expected and result.outcome_reason != expected["reason"]:
-        failures.append(f"reason={result.outcome_reason!r}, expected {expected['reason']!r}")
-    if "method" in expected and result.match_method != expected["method"]:
-        failures.append(f"match_method={result.match_method!r}, expected {expected['method']!r}")
-    want_verdict = {"Detected": ("Detected", True),
-                    "Missed": ("Not Detected", False),
-                    "Could not check": None}[expected["outcome"]]
-    if verdict != want_verdict:
-        failures.append(f"verdict written={verdict!r}, expected {want_verdict!r}")
-    return failures
+# ----------------------------------------------------------------------------
+# Collector under test
+# ----------------------------------------------------------------------------
+MEMORY_FILE = Path(tempfile.mkdtemp(prefix="oaev-harness-")) / "location_memory.json"
 
 
-def run_all():
-    """Run every scenario in its own process (fresh ports + module state)."""
-    print(f"{'scenario':<20} {'result':<6} detail")
-    print("-" * 78)
-    failed = []
-    for name in SCENARIOS:
-        proc = subprocess.run(
-            [sys.executable, __file__, name], capture_output=True, text=True, timeout=180
-        )
-        line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("HARNESS ")), "")
-        ok = proc.returncode == 0 and line.startswith("HARNESS PASS")
-        detail = line.split(" ", 2)[2] if line.count(" ") >= 2 else (proc.stderr.strip()[-200:])
-        print(f"{name:<20} {'PASS' if ok else 'FAIL':<6} {detail}")
-        if not ok:
-            failed.append(name)
-    print("-" * 78)
-    print(f"{len(SCENARIOS) - len(failed)}/{len(SCENARIOS)} scenarios passed")
-    return 1 if failed else 0
-
-
-def main():
-    if SCENARIO == "all":
-        sys.exit(run_all())
-    if SCENARIO not in SCENARIOS:
-        print(f"unknown scenario {SCENARIO!r}; choose one of: all, {', '.join(SCENARIOS)}")
-        sys.exit(2)
-
-    logging.basicConfig(level=logging.WARNING, format="%(message)s")
-    splunk = start(ThreadingHTTPServer, SplunkHandler, 18089)
-    openaev = start(ThreadingHTTPServer, OpenAEVHandler, 18080)
-
-    os.environ.update({
+def set_env(**overrides):
+    env = {
         "OPENAEV_URL": "http://127.0.0.1:18080",
         "OPENAEV_TOKEN": "test-token-1234",
         "COLLECTOR_ID": "splunkes--0b13e3f7-5c9e-46f5-acc4-33032e9b4921",
         "COLLECTOR_NAME": "SplunkES",
         "COLLECTOR_PERIOD": "PT1M",
-        # cnc_unreachable points at a closed local port -> connection refused
-        "SPLUNKES_BASE_URL": "http://127.0.0.1:18099" if SCENARIO == "cnc_unreachable"
-                             else "http://127.0.0.1:18089",
+        "SPLUNKES_BASE_URL": "http://127.0.0.1:18089",
         "SPLUNKES_USERNAME": "svc_openaev",
         "SPLUNKES_PASSWORD": "s3cr3t",
         "SPLUNKES_ALERTS_INDEX": "main",
         "SPLUNKES_TIME_WINDOW": "PT1H",
-        # late_alert needs at least one retry so the collector re-polls after the
-        # SIEM finishes indexing; other scenarios stay at 0 retries to run fast.
-        "SPLUNKES_MAX_RETRY": "3" if SCENARIO == "late_alert" else "0",
+        "SPLUNKES_MAX_RETRY": "0",
         "SPLUNKES_OFFSET": "PT1S",
         "SPLUNKES_VERIFY_SSL": "false",  # mock server is plain HTTP
-    })
-    if SCENARIO == "token":
-        # Prove bearer-token auth: drop basic creds, supply a token instead.
-        os.environ.pop("SPLUNKES_USERNAME", None)
-        os.environ.pop("SPLUNKES_PASSWORD", None)
-        os.environ["SPLUNKES_TOKEN"] = "splunk-bearer-abc123"
+        "SPLUNKES_MEMORY_PATH": str(MEMORY_FILE),
+    }
+    env.update(overrides)
+    os.environ.update(env)
 
+
+def new_collector():
+    """A fresh collector (as after a restart): reloads config and the memory file."""
     from pyoaev.client import OpenAEV
     from pyoaev.helpers import OpenAEVDetectionHelper
     # Prime package import order exactly like the real entrypoint (src/__main__.py)
@@ -464,25 +426,10 @@ def main():
     from src.collector.expectation_handler import GenericExpectationHandler
     from src.collector.expectation_manager import GenericExpectationManager
 
-    print("=" * 78)
-    print(f" SCENARIO: {SCENARIO}")
-    print("=" * 78)
-    print(" Simulated step (inject):")
-    print(f"   inject={INJECT_UUID}  agent={AGENT_UUID}  host={STEP_HOST}")
-    print(f"   src_ip={SRC_IP}  dst_ip={DST_IP}  window={START_DATE}..{END_DATE}")
-    print(f"   expectation_id={EXPECTATION_ID}")
-    print("-" * 78)
-    print(" WIRE TRACE (real collector code <-> mock servers):")
-
     cfg = SplunkESConfig().load
-    collector_id = cfg.collector.id
-
     api = OpenAEV(url=str(cfg.openaev.url), token=cfg.openaev.token, ssl_verify=False)
-    exp_service = SplunkESExpectationService(cfg)
-    trace_service = SplunkESTraceService(cfg)
-    handler = GenericExpectationHandler(exp_service)
-
-    # Capture the ExpectationResults the real handler produces.
+    service = SplunkESExpectationService(cfg)
+    handler = GenericExpectationHandler(service)
     original_batch = handler.handle_batch_expectations
 
     def capturing_batch(*a, **kw):
@@ -491,61 +438,521 @@ def main():
         return results
 
     handler.handle_batch_expectations = capturing_batch
-
     manager = GenericExpectationManager(
-        oaev_api=api,
-        collector_id=collector_id,
-        expectation_handler=handler,
-        trace_service=trace_service,
+        oaev_api=api, collector_id=cfg.collector.id,
+        expectation_handler=handler, trace_service=SplunkESTraceService(cfg),
     )
-    detection_helper = OpenAEVDetectionHelper(
+    helper = OpenAEVDetectionHelper(
         logger=logging.getLogger("dh"),
-        relevant_signatures_types=exp_service.get_supported_signatures(),
+        relevant_signatures_types=service.get_supported_signatures(),
     )
+    return {"manager": manager, "helper": helper, "service": service}
 
-    summary = manager.process_expectations(detection_helper=detection_helper)
 
-    print("-" * 78)
+def cycle(collector, expectations):
+    """Run one collector cycle. Returns what happened."""
+    STATE["expectations"] = expectations
+    STATE["searches"], STATE["spl"] = [], []
+    CAPTURED.update({"bulk_update": None, "individual": [], "traces": None, "results": []})
+    print(f" CYCLE ({len(expectations)} expectation(s)) - wire trace:")
+    summary = collector["manager"].process_expectations(detection_helper=collector["helper"])
+    verdicts = {}
+    bulk = CAPTURED["bulk_update"]
+    if bulk and bulk.get("inputs"):
+        for eid, upd in bulk["inputs"].items():
+            verdicts[eid] = (upd.get("result"), upd.get("is_success"))
+    traces = (CAPTURED["traces"] or {}).get("expectation_traces", [])
+    return {
+        "summary": summary,
+        "results": {r.expectation_id: r for r in CAPTURED["results"]},
+        "verdicts": verdicts,
+        "traces": traces,
+        "searches": list(STATE["searches"]),
+        "spl": list(STATE["spl"]),
+    }
+
+
+def describe(run):
     print(" RESULT")
-    print(f"   processing summary : processed={summary.processed} "
-          f"valid={summary.valid} invalid={summary.invalid} skipped={summary.skipped} "
-          f"outcomes={summary.outcomes}")
-    result = CAPTURED["results"][0] if CAPTURED["results"] else None
-    if result is not None:
-        print(f"   outcome            : {result.outcome.value} "
-              f"(reason={result.outcome_reason}, match_method={result.match_method})")
-    verdict = None
-    bu = CAPTURED["bulk_update"]
-    if bu and bu.get("inputs"):
-        for eid, upd in bu["inputs"].items():
-            verdict = (upd.get("result"), upd.get("is_success"))
-            print(f"   verdict written    : result='{verdict[0]}' is_success={verdict[1]}")
-    elif CAPTURED["individual"]:
-        upd = CAPTURED["individual"][0]["body"] or {}
-        verdict = (upd.get("result"), upd.get("is_success"))
-        print(f"   verdict written    : (individual) result='{verdict[0]}'")
-    else:
-        print("   verdict written    : NONE - expectation left PENDING "
-              "(not mislabelled 'Not Detected')")
-    tr = CAPTURED["traces"]
-    if tr:
-        n = len(tr.get("expectation_traces", []))
-        print(f"   evidence traces    : {n} trace(s) pushed back to OpenAEV")
-    else:
-        print("   evidence traces    : none")
+    for eid, r in run["results"].items():
+        print(f"   outcome            : {r.outcome.value} (reason={r.outcome_reason}, "
+              f"match_method={r.match_method}, search_path={r.search_path})")
+        v = run["verdicts"].get(eid)
+        print("   verdict written    : "
+              + (f"result='{v[0]}' is_success={v[1]}" if v
+                 else "NONE - left pending (not mislabelled 'Not Detected')"))
+    print(f"   searches sent      : {run['searches']}")
+    print(f"   evidence traces    : {len(run['traces'])}")
+    for t in run["traces"]:
+        print(f"       {t.get('inject_expectation_trace_alert_name')}")
+    print("-" * 78)
 
-    expected = SCENARIOS[SCENARIO]
-    failures = check(expected, result, verdict)
+
+WANT_VERDICT = {"Detected": ("Detected", True), "Missed": ("Not Detected", False),
+                "Could not check": None}
+
+
+def check_result(run, exp, outcome, reason=None, method=None, path=None):
+    """Failures for one expectation of a run."""
+    eid = exp["inject_expectation_id"]
+    r = run["results"].get(eid)
+    if r is None:
+        return [f"no result for step {exp['inject_expectation_inject']}"]
+    fails = []
+    if r.outcome.value != outcome:
+        fails.append(f"outcome={r.outcome.value!r}, expected {outcome!r}")
+    if reason is not None and r.outcome_reason != reason:
+        fails.append(f"reason={r.outcome_reason!r}, expected {reason!r}")
+    if method is not None and r.match_method != method:
+        fails.append(f"match_method={r.match_method!r}, expected {method!r}")
+    if path is not None and r.search_path != path:
+        fails.append(f"search_path={r.search_path!r}, expected {path!r}")
+    if run["verdicts"].get(eid) != WANT_VERDICT[outcome]:
+        fails.append(f"verdict={run['verdicts'].get(eid)!r}, expected {WANT_VERDICT[outcome]!r}")
+    return fails
+
+
+def expect_searches(run, want):
+    return [] if run["searches"] == want else [f"searches={run['searches']}, expected {want}"]
+
+
+def read_memory():
+    if not MEMORY_FILE.exists():
+        return {}
+    return json.loads(MEMORY_FILE.read_text(encoding="utf-8")).get("entries", {})
+
+
+def seed_memory(sourcetype="XmlWinEventLog", age_days=0, narrow_runs=0, host=STEP_HOST):
+    proven = datetime.now(timezone.utc) - timedelta(days=age_days)
+    MEMORY_FILE.write_text(json.dumps({"version": 1, "entries": {memory_key(host): {
+        "narrow_runs_since_wide": narrow_runs,
+        "locations": [{"index": "main", "sourcetype": sourcetype, "field": "process",
+                       "rule_name": "Endpoint Suspicious Command", "delay_seconds": 30.0,
+                       "found_on": proven.date().isoformat(),
+                       "proven_at": proven.isoformat()}]}}}), encoding="utf-8")
+
+
+# ----------------------------------------------------------------------------
+# Single-step scenario runner
+# ----------------------------------------------------------------------------
+def run_single():
+    spec = SCENARIOS[SCENARIO]
+    overrides = {}
+    if SCENARIO == "cnc_unreachable":      # closed local port -> connection refused
+        overrides["SPLUNKES_BASE_URL"] = "http://127.0.0.1:18099"
+    if SCENARIO == "late_alert":           # needs a retry so the collector re-polls
+        overrides["SPLUNKES_MAX_RETRY"] = "3"
+    if SCENARIO == "query_refused":
+        overrides["SPLUNKES_QUERY_TEMPLATE"] = (
+            "index={alerts_index} sourcetype=* earliest={start_date} latest={end_date} | delete")
+    set_env(**overrides)
+    if SCENARIO == "token":                # bearer token instead of basic credentials
+        os.environ.pop("SPLUNKES_USERNAME", None)
+        os.environ.pop("SPLUNKES_PASSWORD", None)
+        os.environ["SPLUNKES_TOKEN"] = "splunk-bearer-abc123"
+    STATE["drop_search"] = SCENARIO == "cnc_wide_conn"
+
+    exp = expectation(
+        kind="PREVENTION" if SCENARIO == "prevention" else "DETECTION",
+        include_parent=SCENARIO not in IP_ONLY_SCENARIOS,
+        include_host=SCENARIO in HOSTNAME_SCENARIOS,
+    )
+    run = cycle(new_collector(), [exp])
+    describe(run)
+    fails = check_result(run, exp, spec["outcome"], spec.get("reason"),
+                         spec.get("method"), spec.get("path"))
+    if "searches" in spec:
+        fails += expect_searches(run, spec["searches"])
+    r = run["results"].get(exp["inject_expectation_id"])
+    note = (f"{r.outcome.value} reason={r.outcome_reason} method={r.match_method} "
+            f"searches={len(run['searches'])}") if r else "no result"
+    return fails, note
+
+
+# ----------------------------------------------------------------------------
+# Multi-run scenarios (query writer, location memory, batching)
+# ----------------------------------------------------------------------------
+def rows_marker_for(*steps, sourcetype="XmlWinEventLog", only_kind=None, extra=None):
+    """Row function: one marker row per (n, host), optionally only for one search kind."""
+    def rows(kind, call_no):
+        if only_kind and kind != only_kind:
+            return []
+        out = []
+        for n, host in steps:
+            row = marker_row(host=host, sourcetype=sourcetype, process=marker_cmd(n))
+            row.update(extra or {})
+            out.append(row)
+        return out
+    return rows
+
+
+def flow_memory_narrow_hit():
+    """First run searches wide and remembers; the repeat run searches the remembered place."""
+    set_env()
+    fails = []
+    first = expectation(n=1, include_host=True)
+    STATE["rows"] = rows_marker_for((1, STEP_HOST))
+    run1 = cycle(new_collector(), [first])
+    describe(run1)
+    fails += check_result(run1, first, "Detected", method="step_marker", path="wide")
+    fails += expect_searches(run1, ["wide"])
+    entry = read_memory().get(memory_key(), {})
+    loc = (entry.get("locations") or [{}])[0]
+    if (loc.get("index"), loc.get("sourcetype"), loc.get("field")) != \
+            ("main", "XmlWinEventLog", "process"):
+        fails.append(f"memory after first run = {loc}")
+
+    repeat = expectation(n=2, include_host=True)       # same test, new run -> new inject ID
+    STATE["rows"] = rows_marker_for((2, STEP_HOST))
+    run2 = cycle(new_collector(), [repeat])            # new collector = restart, memory from file
+    describe(run2)
+    fails += check_result(run2, repeat, "Detected", method="step_marker", path="narrow")
+    fails += expect_searches(run2, ["narrow"])
+    if 'sourcetype="XmlWinEventLog"' not in (run2["spl"] or [""])[0]:
+        fails.append("narrow search does not name the remembered sourcetype")
+    if len(run2["searches"]) > len(run1["searches"]):
+        fails.append("repeat run sent more searches than the first run")
+    return fails, (f"first run {len(run1['searches'])} search (wide), "
+                   f"repeat run {len(run2['searches'])} search (narrow)")
+
+
+def flow_memory_late_first_run():
+    """First run has to poll for a late alert; the repeat run needs one narrow search."""
+    set_env(SPLUNKES_MAX_RETRY="3")
+    fails = []
+    first = expectation(n=1, include_host=True)
+    hit = rows_marker_for((1, STEP_HOST))
+    STATE["rows"] = lambda kind, call_no: [] if call_no < 2 else hit(kind, call_no)
+    run1 = cycle(new_collector(), [first])
+    describe(run1)
+    fails += check_result(run1, first, "Detected", path="wide")
+    fails += expect_searches(run1, ["wide", "wide"])
+
+    repeat = expectation(n=2, include_host=True)
+    STATE["rows"] = rows_marker_for((2, STEP_HOST))
+    run2 = cycle(new_collector(), [repeat])
+    describe(run2)
+    fails += check_result(run2, repeat, "Detected", path="narrow")
+    fails += expect_searches(run2, ["narrow"])
+    if not len(run2["searches"]) < len(run1["searches"]):
+        fails.append("repeat run did not send fewer searches than the first run")
+    return fails, (f"first run {len(run1['searches'])} searches (polled), "
+                   f"repeat run {len(run2['searches'])} search (narrow)")
+
+
+def flow_memory_wide_fallback():
+    """Remembered place is empty -> wide search finds it elsewhere -> memory updated."""
+    set_env()
+    seed_memory(sourcetype="old:sourcetype")
+    exp = expectation(n=3, include_host=True)
+    STATE["rows"] = rows_marker_for((3, STEP_HOST), sourcetype="XmlWinEventLog", only_kind="wide")
+    run = cycle(new_collector(), [exp])
+    describe(run)
+    fails = check_result(run, exp, "Detected", path="wide")
+    fails += expect_searches(run, ["narrow", "wide"])
+    newest = (read_memory().get(memory_key(), {}).get("locations") or [{}])[0]
+    if newest.get("sourcetype") != "XmlWinEventLog":
+        fails.append(f"memory not updated to the new place: {newest}")
+    return fails, "narrow empty, wide hit, memory moved to the new sourcetype"
+
+
+def flow_memory_miss():
+    """Remembered place empty AND wide empty -> Missed, only after both searches."""
+    set_env()
+    seed_memory()
+    exp = expectation(n=4, include_host=True)
+    STATE["rows"] = lambda kind, call_no: []
+    run = cycle(new_collector(), [exp])
+    describe(run)
+    fails = check_result(run, exp, "Missed", reason="no_alerts", path="wide")
+    fails += expect_searches(run, ["narrow", "wide"])
+    if memory_key() in read_memory():
+        fails.append("memory entry kept after a confirmed miss")
+    return fails, "narrow empty, wide empty -> Missed; entry forgotten"
+
+
+def flow_memory_expired():
+    """An expired entry is not trusted: wide search, then re-proven."""
+    set_env()
+    seed_memory(age_days=60)                             # TTL default is 30 days
+    exp = expectation(n=5, include_host=True)
+    STATE["rows"] = rows_marker_for((5, STEP_HOST))
+    run = cycle(new_collector(), [exp])
+    describe(run)
+    fails = check_result(run, exp, "Detected", path="wide")
+    fails += expect_searches(run, ["wide"])
+    loc = (read_memory().get(memory_key(), {}).get("locations") or [{}])[0]
+    if loc.get("found_on") != datetime.now(timezone.utc).date().isoformat():
+        fails.append(f"entry not re-proven today: {loc}")
+    return fails, "expired entry skipped, wide search, re-proven today"
+
+
+def flow_memory_periodic_wide():
+    """Every Nth run searches wide even with a valid entry (default N=5)."""
+    set_env()
+    seed_memory(narrow_runs=4)                           # 4 narrow runs since last wide
+    exp = expectation(n=6, include_host=True)
+    STATE["rows"] = rows_marker_for((6, STEP_HOST))
+    run = cycle(new_collector(), [exp])
+    describe(run)
+    fails = check_result(run, exp, "Detected", path="wide")
+    fails += expect_searches(run, ["wide"])
+    counter = read_memory().get(memory_key(), {}).get("narrow_runs_since_wide")
+    if counter != 0:
+        fails.append(f"narrow-run counter not reset after the wide search: {counter}")
+    return fails, "5th run went wide despite a valid entry; counter reset"
+
+
+def flow_batched_markers():
+    """Three steps in one cycle share ONE search, on the first run and on the repeat."""
+    set_env()
+    hosts = ["WS-TEST-01", "WS-TEST-02", "WS-TEST-03"]
+    fails = []
+    first = [expectation(n=i + 1, include_host=True, host=h) for i, h in enumerate(hosts)]
+    STATE["rows"] = rows_marker_for(*[(i + 1, h) for i, h in enumerate(hosts)])
+    run1 = cycle(new_collector(), first)
+    describe(run1)
+    for exp in first:
+        fails += check_result(run1, exp, "Detected", method="step_marker", path="wide")
+    fails += expect_searches(run1, ["wide"])
+    for i in range(3):
+        if inject_uuid(i + 1) not in (run1["spl"] or [""])[0]:
+            fails.append(f"wide search does not cover step {i + 1}")
+
+    repeat = [expectation(n=i + 11, include_host=True, host=h) for i, h in enumerate(hosts)]
+    STATE["rows"] = rows_marker_for(*[(i + 11, h) for i, h in enumerate(hosts)])
+    run2 = cycle(new_collector(), repeat)
+    describe(run2)
+    for exp in repeat:
+        fails += check_result(run2, exp, "Detected", path="narrow")
+    fails += expect_searches(run2, ["narrow"])
+    return fails, (f"3 steps: first run {len(run1['searches'])} search, repeat run "
+                   f"{len(run2['searches'])} search (one search per step would be 3)")
+
+
+def flow_cnc_narrow_conn():
+    """Connection breaks on the narrow search -> Could not check, wide not attempted."""
+    set_env()
+    seed_memory()
+    STATE["drop_search"] = True
+    exp = expectation(n=7, include_host=True)
+    run = cycle(new_collector(), [exp])
+    describe(run)
+    fails = check_result(run, exp, "Could not check", reason="source_unreachable", path="narrow")
+    fails += expect_searches(run, ["narrow"])
+    if memory_key() not in read_memory():
+        fails.append("memory entry dropped although nothing was checked")
+    return fails, "narrow search connection dropped -> Could not check, memory kept"
+
+
+def flow_not_yet_due():
+    """A step whose alerts are not due yet is not searched and gets no verdict."""
+    set_env()
+    exp = expectation(n=8, include_host=True,
+                      end=(_now + timedelta(minutes=2)).strftime(FMT))
+    run = cycle(new_collector(), [exp])
+    describe(run)
+    fails = expect_searches(run, [])
+    if run["results"] or run["verdicts"]:
+        fails.append("a not-yet-due step got a result or a verdict")
+    if run["summary"].deferred != 1:
+        fails.append(f"deferred={run['summary'].deferred}, expected 1")
+    return fails, "step still inside its alert delay: 0 searches, no verdict"
+
+
+def flow_falcon_id():
+    """A forwarded CrowdStrike alert keeps its Falcon alert id in the trace."""
+    set_env()
+    falcon_id = "cid0a1b2c:ind:9f8e7d:4242-10357-99"
+    exp = expectation(n=9, include_host=True)
+    STATE["rows"] = rows_marker_for(
+        (9, STEP_HOST), sourcetype="crowdstrike:events:sensor",
+        extra={"event.CompositeId": falcon_id})
+    run = cycle(new_collector(), [exp])
+    describe(run)
+    fails = check_result(run, exp, "Detected", method="step_marker")
+    name = run["traces"][0].get("inject_expectation_trace_alert_name", "") if run["traces"] else ""
+    for piece in (f"falcon_alert_id={falcon_id}", "index=main",
+                  "sourcetype=crowdstrike:events:sensor", "field=process"):
+        if piece not in name:
+            fails.append(f"trace name lacks '{piece}': {name!r}")
+    return fails, "trace name carries index, sourcetype, field and falcon_alert_id"
+
+
+def flow_validator_rules():
+    """The validator refuses anything that writes, deletes, sends, calls out or runs scripts."""
+    import src.collector.collector  # noqa: F401
+    from src.services.spl_validator import SplunkESQueryRefusedError, validate_spl
+    ok = "index=main sourcetype=x earliest=1 latest=2"
+    refused = {
+        "writes (outputlookup)": ok + " | outputlookup x.csv",
+        "writes (collect)": ok + " | collect index=summary",
+        "deletes": ok + " | delete",
+        "sends (sendemail)": ok + ' | sendemail to="a@example.invalid"',
+        "calls out (rest)": "| rest /services/server/info",
+        "runs scripts (script)": ok + " | script python x",
+        "runs other searches (map)": ok + ' | map search="search index=main"',
+        "transforms (eval, not on the list)": ok + " | eval a=1",
+        "subsearch": "index=main sourcetype=x [search index=other] earliest=1 latest=2",
+        "macro": "index=main sourcetype=x `some_macro` earliest=1 latest=2",
+        "no index": "sourcetype=x earliest=1 latest=2 | table _time",
+        "wildcard index": "index=* sourcetype=x earliest=1 latest=2",
+        "no sourcetype": "index=main earliest=1 latest=2 | table _time",
+        "no time window": "index=main sourcetype=x | table _time",
+        "half a time window": "index=main sourcetype=x earliest=1 | table _time",
+    }
+    accepted = {
+        "filter + select + limit":
+            ok + ' "abc" | where x=1 | table _time, host | sort 0 -_time | head 10',
+        "count": ok + " | stats count by sourcetype",
+        "pipe inside a quoted term": ok + ' "a | delete" | table _time',
+    }
+    fails = []
+    for label, spl in refused.items():
+        try:
+            validate_spl(spl)
+            fails.append(f"NOT refused: {label}")
+        except SplunkESQueryRefusedError as e:
+            print(f"   refused  {label:<36} {e}")
+    for label, spl in accepted.items():
+        try:
+            validate_spl(spl)
+            print(f"   accepted {label}")
+        except SplunkESQueryRefusedError as e:
+            fails.append(f"wrongly refused: {label} ({e})")
+    return fails, f"{len(refused)} searches refused, {len(accepted)} accepted"
+
+
+def flow_template_proving():
+    """A template can only be used after it was run against the mock."""
+    set_env()
+    collector = new_collector()
+    from src.services.query_writer import TemplateStore
+    from src.services.spl_validator import SplunkESQueryRefusedError
+    client = collector["service"].client_api
+    STATE["rows"] = lambda kind, call_no: []
+    path = MEMORY_FILE.with_name("templates.json")
+    path.write_text(json.dumps({"version": 1, "templates": [
+        {"id": "unproven", "purpose": "wide",
+         "spl": "index={index} {sourcetype_filter} earliest={earliest} latest={latest} "
+                "| table {fields}"}
+    ]}), encoding="utf-8")
+    store = TemplateStore(path)
+    good = {"id": "count_by_sourcetype", "purpose": "wide",
+            "spl": "index={index} {sourcetype_filter} ({step_filter}) earliest={earliest} "
+                   "latest={latest} | stats count by sourcetype"}
+    bad = dict(good, id="exfil", spl=good["spl"] + " | outputlookup stolen.csv")
+    odd = dict(good, id="odd", spl=good["spl"].replace("{index}", "{anything}"))
+    fails = []
+
+    def refused(label, fn):
+        try:
+            fn()
+            fails.append(f"NOT refused: {label}")
+        except SplunkESQueryRefusedError as e:
+            print(f"   refused  {label:<40} {e}")
+
+    values = dict(index="main", sourcetype_filter="sourcetype=*", step_filter='("x")',
+                  earliest=1, latest=2, fields="_time", limit=10)
+    refused("render of an unproven template", lambda: store.render("unproven", **values))
+    refused("save without running it", lambda: store.add(good, run_search=None))
+    refused("template with a refused command", lambda: store.add(bad, client.run_search))
+    refused("template with an unknown placeholder", lambda: store.add(odd, client.run_search))
+    sent_before = len(STATE["searches"])
+    saved = store.add(good, client.run_search, against="mock_e2e_harness")
+    if len(STATE["searches"]) != sent_before + 1:
+        fails.append("the new template was not run against the mock before saving")
+    if not saved.get("proven"):
+        fails.append("saved template has no proven stamp")
+    reloaded = TemplateStore(path)
+    if reloaded.ids() != ["count_by_sourcetype"]:
+        fails.append(f"usable templates after reload: {reloaded.ids()}")
+    try:
+        reloaded.render("count_by_sourcetype", **values)
+    except SplunkESQueryRefusedError as e:
+        fails.append(f"proven template refused: {e}")
+    shipped = TemplateStore().ids()
+    if sorted(shipped) != ["narrow_location_search", "wide_step_search"]:
+        fails.append(f"shipped templates usable: {shipped}")
+    return fails, "unproven / unsafe templates refused; new one saved only after a mock run"
+
+
+FLOWS = {
+    "memory_narrow_hit": flow_memory_narrow_hit,
+    "memory_late_first_run": flow_memory_late_first_run,
+    "memory_wide_fallback": flow_memory_wide_fallback,
+    "memory_miss": flow_memory_miss,
+    "memory_expired": flow_memory_expired,
+    "memory_periodic_wide": flow_memory_periodic_wide,
+    "batched_markers": flow_batched_markers,
+    "cnc_narrow_conn": flow_cnc_narrow_conn,
+    "not_yet_due": flow_not_yet_due,
+    "falcon_id": flow_falcon_id,
+    "validator_rules": flow_validator_rules,
+    "template_proving": flow_template_proving,
+}
+
+
+def prove_templates():
+    """Run the repo's query templates against the mock Splunk and stamp them."""
+    set_env()
+    collector = new_collector()
+    from src.services.query_writer import TemplateStore
+    STATE["rows"] = lambda kind, call_no: []
+    ids = TemplateStore().prove_existing(collector["service"].client_api.run_search,
+                                         against="mock_e2e_harness")
+    fails = [] if len(STATE["searches"]) == len(ids) else ["not every template was run"]
+    return fails, f"proven and stamped: {', '.join(ids)}"
+
+
+def run_all():
+    """Run every scenario in its own process (fresh ports, memory file, module state)."""
+    names = list(SCENARIOS) + list(FLOWS)
+    print(f"{'scenario':<22} {'result':<6} detail")
+    print("-" * 100)
+    failed = []
+    for name in names:
+        proc = subprocess.run([sys.executable, __file__, name],
+                              capture_output=True, text=True, timeout=240)
+        line = next((ln for ln in proc.stdout.splitlines() if ln.startswith("HARNESS ")), "")
+        ok = proc.returncode == 0 and line.startswith("HARNESS PASS")
+        detail = line.split(" ", 2)[2] if line.count(" ") >= 2 else proc.stderr.strip()[-300:]
+        print(f"{name:<22} {'PASS' if ok else 'FAIL':<6} {detail}")
+        if not ok:
+            failed.append(name)
+    print("-" * 100)
+    print(f"{len(names) - len(failed)}/{len(names)} scenarios passed")
+    return 1 if failed else 0
+
+
+def main():
+    if SCENARIO == "all":
+        sys.exit(run_all())
+    known = list(SCENARIOS) + list(FLOWS) + ["prove_templates"]
+    if SCENARIO not in known:
+        print(f"unknown scenario {SCENARIO!r}; choose one of: all, {', '.join(known)}")
+        sys.exit(2)
+
+    logging.basicConfig(level=logging.WARNING, format="%(message)s")
+    splunk = start(SplunkHandler, 18089)
+    openaev = start(OpenAEVHandler, 18080)
     print("=" * 78)
-    observed = (f"{result.outcome.value} reason={result.outcome_reason} "
-                f"method={result.match_method}") if result else "no result"
-    if failures:
-        print(f"HARNESS FAIL {observed} :: " + "; ".join(failures))
+    print(f" SCENARIO: {SCENARIO}")
+    print("=" * 78)
+    if SCENARIO == "prove_templates":
+        fails, note = prove_templates()
+    elif SCENARIO in FLOWS:
+        fails, note = FLOWS[SCENARIO]()
     else:
-        print(f"HARNESS PASS {observed}")
-
-    splunk.shutdown(); openaev.shutdown()
-    sys.exit(1 if failures else 0)
+        fails, note = run_single()
+    print("=" * 78)
+    if fails:
+        print(f"HARNESS FAIL {note} :: " + "; ".join(fails))
+    else:
+        print(f"HARNESS PASS {note}")
+    splunk.shutdown()
+    openaev.shutdown()
+    sys.exit(1 if fails else 0)
 
 
 if __name__ == "__main__":

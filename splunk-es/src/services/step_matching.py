@@ -212,6 +212,10 @@ class StepContext:
     markers: list[str] = field(default_factory=list)
     hostnames: list[str] = field(default_factory=list)
     ips: list[str] = field(default_factory=list)
+    source_ips: list[str] = field(default_factory=list)
+    target_ips: list[str] = field(default_factory=list)
+    start: datetime | None = None
+    end: datetime | None = None
     window_start: datetime | None = None
     window_end: datetime | None = None
 
@@ -223,6 +227,7 @@ class StepContext:
         after: timedelta,
     ) -> "StepContext":
         parents, hostnames, ips = [], [], []
+        source_ips, target_ips = [], []
         start = end = None
         for sig in signatures:
             t, v = sig.get("type"), sig.get("value") or ""
@@ -232,6 +237,9 @@ class StepContext:
                 hostnames.append(v)
             elif t in IP_KEYS:
                 ips.append(v.strip().lower())
+                (source_ips if t.startswith("source") else target_ips).append(
+                    v.strip().lower()
+                )
             elif t == "start_date":
                 start = parse_time(v)
             elif t == "end_date":
@@ -240,6 +248,10 @@ class StepContext:
             markers=markers_from_parent_process(parents),
             hostnames=hostnames,
             ips=ips,
+            source_ips=source_ips,
+            target_ips=target_ips,
+            start=start,
+            end=end,
             window_start=start - before if start else None,
             window_end=end + after if end else None,
         )
