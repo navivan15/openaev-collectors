@@ -28,6 +28,7 @@ class Planner:
     def __init__(self, catalogue_path: Path | str = CATALOGUE_PATH) -> None:
         data = json.loads(Path(catalogue_path).read_text(encoding="utf-8"))
         self.actions: dict[str, dict[str, Any]] = data["actions"]
+        self.not_simulated: dict[str, str] = data.get("not_simulated", {})
         self.tests: dict[str, dict[str, Any]] = {t["id"]: t for t in data["tests"]}
         for test in self.tests.values():
             if test["action"] not in self.actions:
@@ -35,6 +36,27 @@ class Planner:
                     f"Test {test['id']} uses action '{test['action']}', which is "
                     f"not on the allow-list"
                 )
+
+    def use_scenario(self, scenario: dict[str, Any]) -> list[str]:
+        """Make an approved scenario's tests plannable. Returns their ids in order.
+
+        Refuses a draft, and refuses a scenario whose tests changed after it
+        was approved.
+        """
+        from .scenario_builder import tests_digest
+
+        if scenario.get("status") != "approved" or not scenario.get("approved_by"):
+            raise PlanningError(f"Scenario '{scenario.get('id')}' has not been approved")
+        if scenario.get("approved_digest") != tests_digest(scenario.get("tests") or []):
+            raise PlanningError(f"Scenario '{scenario.get('id')}' was changed after approval")
+        ids = []
+        for test in scenario["tests"]:
+            if test.get("action") not in self.actions:
+                raise PlanningError(f"Test {test.get('id')} uses an action that is not "
+                                    f"on the allow-list")
+            self.tests[test["id"]] = test
+            ids.append(test["id"])
+        return ids
 
     def catalogue(self) -> list[dict[str, Any]]:
         return [

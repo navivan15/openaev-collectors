@@ -1,55 +1,104 @@
 {
-  "version": 1,
+  "version": 2,
+  "about": "The action allow-list. Every step any ant can plan is one of these, with the step marker filled in. Each action is harmless by itself: it prints, reads or looks something up, and changes nothing that matters. 'fidelity: partial' means the real technique would change the system and this action only runs the same tool in a read-only way.",
   "actions": {
     "echo_marker": {
       "description": "Run a shell that only echoes the step marker.",
       "command": "cmd.exe /c echo oaev-step-{marker}",
-      "agentless": false
+      "techniques": ["T1059.003"], "category": "endpoint", "fidelity": "full",
+      "expect": {"falcon": "detection", "splunk": "detection"}
+    },
+    "ps_echo_marker": {
+      "description": "Run PowerShell that only writes the step marker to its output.",
+      "command": "powershell.exe -NoProfile -Command Write-Output oaev-step-{marker}",
+      "techniques": ["T1059.001"], "category": "endpoint", "fidelity": "full",
+      "expect": {"falcon": "detection", "splunk": "detection"}
+    },
+    "system_info": {
+      "description": "Read basic system information.",
+      "command": "cmd.exe /c systeminfo & rem oaev-step-{marker}",
+      "techniques": ["T1082"], "category": "endpoint", "fidelity": "full",
+      "expect": {"splunk": "detection"}
+    },
+    "network_config": {
+      "description": "Read the network configuration.",
+      "command": "cmd.exe /c ipconfig /all & rem oaev-step-{marker}",
+      "techniques": ["T1016"], "category": "endpoint", "fidelity": "full",
+      "expect": {"splunk": "detection"}
+    },
+    "whoami": {
+      "description": "Read the current user and its groups.",
+      "command": "cmd.exe /c whoami /all & rem oaev-step-{marker}",
+      "techniques": ["T1033"], "category": "endpoint", "fidelity": "full",
+      "expect": {"splunk": "detection"}
+    },
+    "process_list": {
+      "description": "List running processes.",
+      "command": "cmd.exe /c tasklist & rem oaev-step-{marker}",
+      "techniques": ["T1057"], "category": "endpoint", "fidelity": "full",
+      "expect": {"splunk": "detection"}
+    },
+    "local_groups": {
+      "description": "List local groups.",
+      "command": "cmd.exe /c net localgroup & rem oaev-step-{marker}",
+      "techniques": ["T1069.001"], "category": "endpoint", "fidelity": "full",
+      "expect": {"splunk": "detection"}
+    },
+    "local_accounts": {
+      "description": "List local accounts.",
+      "command": "cmd.exe /c net user & rem oaev-step-{marker}",
+      "techniques": ["T1087.001"], "category": "endpoint", "fidelity": "full",
+      "expect": {"splunk": "detection"}
+    },
+    "neighbours": {
+      "description": "Read the table of recently seen neighbours on the network.",
+      "command": "cmd.exe /c arp -a & rem oaev-step-{marker}",
+      "techniques": ["T1018"], "category": "endpoint", "fidelity": "full",
+      "expect": {"splunk": "detection"}
+    },
+    "portproxy_show": {
+      "description": "Run the port-proxy tool in show mode. A real intrusion would add a proxy rule; this only lists them.",
+      "command": "cmd.exe /c netsh interface portproxy show all & rem oaev-step-{marker}",
+      "techniques": ["T1090.001"], "category": "network", "fidelity": "partial",
+      "expect": {"falcon": "detection", "splunk": "detection"}
     },
     "drop_marker_file": {
       "description": "Create an empty file whose name carries the step marker, then delete it.",
       "command": "cmd.exe /c type nul > %TEMP%\\oaev-step-{marker}.txt & del %TEMP%\\oaev-step-{marker}.txt",
-      "agentless": false
+      "techniques": ["T1105"], "category": "endpoint", "fidelity": "partial",
+      "expect": {"falcon": "prevention", "splunk": "detection"}
     },
     "dns_lookup_marker": {
       "description": "Look up a hostname under a reserved, non-resolving domain that carries the step marker.",
       "command": "nslookup oaev-step-{marker}.sim.invalid",
-      "agentless": false
+      "techniques": ["T1071.004"], "category": "network", "fidelity": "full",
+      "expect": {"splunk": "detection"}
     },
     "tcp_probe": {
       "description": "Open and close one TCP connection from the source to the target address. No payload.",
       "command": "tcp-connect {target_ip}:445",
-      "agentless": true
+      "agentless": true,
+      "techniques": ["T1021.002"], "category": "network", "fidelity": "partial",
+      "expect": {"splunk": "detection"}
     }
   },
+  "not_simulated": {
+    "T1003": "Credential dumping cannot be done harmlessly.",
+    "T1070": "Removing logs or other traces would damage the evidence the test relies on.",
+    "T1562": "Switching off a defence is not a harmless action.",
+    "T1486": "Encrypting data is destructive.",
+    "T1490": "Removing recovery data is destructive.",
+    "T1078": "Using real accounts needs real credentials, which the ants never handle.",
+    "T1190": "Exploiting a public-facing application is out of scope for a benign test."
+  },
   "tests": [
-    {
-      "id": "T-EXEC-001",
-      "title": "Command shell runs a marked command",
-      "technique": "T1059.003",
-      "action": "echo_marker",
-      "expect": {"falcon": "detection", "splunk": "detection"}
-    },
-    {
-      "id": "T-FILE-002",
-      "title": "Marked file dropped in the temp folder",
-      "technique": "T1105",
-      "action": "drop_marker_file",
-      "expect": {"falcon": "prevention", "splunk": "detection"}
-    },
-    {
-      "id": "T-DNS-003",
-      "title": "Lookup of a marked hostname",
-      "technique": "T1071.004",
-      "action": "dns_lookup_marker",
-      "expect": {"splunk": "detection"}
-    },
-    {
-      "id": "T-NET-004",
-      "title": "Connection to a file-sharing port",
-      "technique": "T1021.002",
-      "action": "tcp_probe",
-      "expect": {"splunk": "detection"}
-    }
+    {"id": "T-EXEC-001", "title": "Command shell runs a marked command", "technique": "T1059.003",
+     "action": "echo_marker", "expect": {"falcon": "detection", "splunk": "detection"}},
+    {"id": "T-FILE-002", "title": "Marked file dropped in the temp folder", "technique": "T1105",
+     "action": "drop_marker_file", "expect": {"falcon": "prevention", "splunk": "detection"}},
+    {"id": "T-DNS-003", "title": "Lookup of a marked hostname", "technique": "T1071.004",
+     "action": "dns_lookup_marker", "expect": {"splunk": "detection"}},
+    {"id": "T-NET-004", "title": "Connection to a file-sharing port", "technique": "T1021.002",
+     "action": "tcp_probe", "expect": {"splunk": "detection"}}
   ]
 }

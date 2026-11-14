@@ -7,11 +7,14 @@ Everything here runs **on mocks only**. The endpoint agent is simulated and exec
 Falcon are mock servers. It is for authorised testing of systems the organisation owns.
 
 ```
-planner -> gatekeeper -> agent -> Splunk observer + Falcon observer -> analyst -> matcher -> reporter
+intel -> scenario builder -> planner -> gatekeeper -> agent
+      -> Splunk observer + Falcon observer -> analyst -> matcher -> reporter
 ```
 
 | Ant | File | What it does |
 |---|---|---|
+| Intel | `ants/intel.py` | Reads a threat scenario from OpenCTI as a STIX bundle and lists its ATT&CK techniques in tactic order. Read-only. |
+| Scenario builder | `ants/scenario_builder.py` | Maps each technique to an action on the allow-list and writes a draft scenario with a coverage table. A person approves it before it can be planned. |
 | Planner | `ants/planner.py`, `ants/catalogue.json` | Turns catalogue tests into steps. Each step gets a new marker (a UUID) and a command taken from the action allow-list. It cannot invent an action. |
 | Gatekeeper | `ants/gatekeeper.py` | Decides whether a step may run, and keeps the audit log. See below. |
 | Agent | `ants/agent_sim.py` | Sandbox stand-in for OpenAEV's endpoint agent. Asks the gatekeeper, then writes the synthetic telemetry the configured defences would produce. Runs no command. |
@@ -23,6 +26,32 @@ planner -> gatekeeper -> agent -> Splunk observer + Falcon observer -> analyst -
 
 The four outcomes are the collector's: `Detected`, `Prevented`, `Missed`, `Could not check`. A step the gatekeeper
 refused is `Not run`; it is listed and never scored.
+
+## From an OpenCTI scenario to a tested scenario
+
+1. **Intel ant** fetches a report from OpenCTI (`OpenCTIClient.report_bundle`) or takes a bundle you exported
+   (`IntelAnt.from_bundle`). It reads the threat and the `attack-pattern` objects that carry a MITRE ATT&CK id.
+2. **Scenario builder** looks up each technique in the action library (`ants/catalogue.json`):
+
+   | Coverage | Meaning |
+   |---|---|
+   | `simulated` | A reviewed action behaves like the technique. |
+   | `partial` | The real technique would change the system, so the action only runs the same tool read-only. |
+   | `not simulated` | The technique cannot be done harmlessly (credential dumping, log removal, disabling a defence, destructive actions, real accounts, exploitation). |
+   | `no action` | Nothing in the library covers it yet. |
+
+   It never writes a command. Whether the ants can test a given scenario depends on how much of it the library
+   covers; to cover more, add a reviewed action to the allow-list.
+3. **A person approves the draft.** The approval is bound to the exact list of tests; the planner refuses a draft
+   and refuses a scenario that changed after approval.
+4. **The run** goes through the same planner, gatekeeper, observers, analyst, matcher and reporter as any other
+   test. The report adds the coverage table and the same run scored per team: purple team (the whole chain), SecOps
+   (endpoint steps), NetOps (network steps).
+
+The library today has 13 actions covering 13 techniques. The sandbox's OpenCTI is a mock serving one synthetic,
+illustrative bundle; it is not an authoritative profile of any named group. The GraphQL query used to fetch a report
+has not been checked against a real OpenCTI. OpenAEV itself can also turn an OpenCTI bundle into a scenario
+(`openaev-api`, STIX API); these ants do not use that path yet.
 
 ## Gatekeeper
 
@@ -91,11 +120,11 @@ overwrite the history.
 Use the `splunk-es` virtualenv (it has `pyoaev` and `requests`):
 
 ```shell
-splunk-es/.venv/Scripts/python validation-ants/sandbox.py all        # 18 scenarios, pass/fail table
+splunk-es/.venv/Scripts/python validation-ants/sandbox.py all        # 20 scenarios, pass/fail table
 splunk-es/.venv/Scripts/python validation-ants/sandbox.py full_run   # one scenario with details
 ```
 
-The scenarios cover a full run, a repeat run using the memory, the analyst's change log, every gatekeeper control
+The scenarios cover a scenario fetched from OpenCTI and built into tests, what the builder refuses, a full run, a repeat run using the memory, the analyst's change log, every gatekeeper control
 (scope, changed step, kill switch, window, replay, step limit, audit tampering, bypass attempts), Falcon failures,
 the pipeline and prevention gaps, the learned rule with its quiet window, and drift. The demo page
 (`splunk-es/harness/demo_server.py`) lists them under "All ants: full pipeline".

@@ -18,6 +18,26 @@ from typing import Any
 from .models import COULD_NOT_CHECK, DETECTED, MISSED, NOT_RUN, PREVENTED, Step, StepVerdict
 
 SCORED = (DETECTED, PREVENTED, MISSED)
+# Which steps each team looks at. Purple team sees the whole chain.
+TEAM_PROFILES = {"Purple team": None, "SecOps": "endpoint", "NetOps": "network"}
+
+
+def team_views(report: dict[str, Any], category_of_test: dict[str, str]) -> list[dict[str, Any]]:
+    """The same run, scored for each team's part of it."""
+    views = []
+    for team, category in TEAM_PROFILES.items():
+        steps = [s for s in report["steps"]
+                 if category is None or category_of_test.get(s["test_id"]) == category]
+        seen = sum(1 for s in steps if s["outcome"] in (DETECTED, PREVENTED))
+        scored = sum(1 for s in steps if s["outcome"] in SCORED)
+        views.append({
+            "team": team, "steps": len(steps), "seen": seen,
+            "missed": sum(1 for s in steps if s["outcome"] == MISSED),
+            "unchecked": sum(1 for s in steps if s["outcome"] == COULD_NOT_CHECK),
+            "detection_rate": round(seen / scored, 3) if scored else None,
+            "findings": sum(len(s["findings"]) for s in steps),
+        })
+    return views
 RANK = {MISSED: 0, DETECTED: 1, PREVENTED: 2}
 
 

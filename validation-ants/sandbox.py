@@ -1,8 +1,8 @@
 """
 Sandbox for the validation ants: the whole pipeline on mocks, with checks.
 
-  planner -> gatekeeper -> (simulated) agent -> Splunk observer + Falcon observer
-          -> analyst -> matcher -> reporter
+  intel -> scenario builder -> planner -> gatekeeper -> (simulated) agent
+        -> Splunk observer + Falcon observer -> analyst -> matcher -> reporter
 
 The Splunk observer is the real splunk-es collector code talking to a mock
 Splunk. The Falcon observer talks to a mock Falcon Alerts API. The agent is
@@ -35,15 +35,17 @@ sys.path.insert(0, str(HERE))
 from ants.agent_sim import FMT, SimulatedAgent, Telemetry  # noqa: E402
 from ants.analyst import SearchAnalyst  # noqa: E402
 from ants.gatekeeper import Gatekeeper, Refused  # noqa: E402
+from ants.intel import IntelAnt, IntelError, OpenCTIClient  # noqa: E402
+from ants.scenario_builder import ScenarioBuilder  # noqa: E402
 from ants.matcher import Matcher, RuleBook  # noqa: E402
 from ants.models import COULD_NOT_CHECK, DETECTED, MISSED, PREVENTED  # noqa: E402
 from ants.observers import FalconHttpClient, FalconObserver, SplunkObserver  # noqa: E402
 from ants.pipeline import run_validation  # noqa: E402
 from ants.planner import Planner  # noqa: E402
-from ants.reporter import Reporter  # noqa: E402
+from ants.reporter import Reporter, team_views  # noqa: E402
 
 SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "full_run"
-SPLUNK_PORT, FALCON_PORT = 18189, 18190
+SPLUNK_PORT, FALCON_PORT, OPENCTI_PORT = 18189, 18190, 18191
 WORK = Path(tempfile.mkdtemp(prefix="oaev-ants-"))
 TELEMETRY = Telemetry()
 MOCK = {"falcon_mode": "ok", "splunk_searches": []}
@@ -61,6 +63,21 @@ DEFENCES = {
                    "falcon_rule": "File written to temp by script"},
     "T-DNS-003": {"splunk_rule": DNS_RULE},
     "T-NET-004": {},   # nothing sees it
+    # Defaults per action, for tests built from a scenario.
+    "action:ps_echo_marker": {"falcon": "detect", "forward": True, "falcon_rule": "Suspicious PowerShell"},
+    "action:echo_marker": {"falcon": "detect", "forward": True},
+    "action:system_info": {"splunk_rule": {"sourcetype": "XmlWinEventLog", "field": "process",
+                                           "rule_name": "Discovery commands in a short time"}},
+    "action:whoami": {"splunk_rule": {"sourcetype": "XmlWinEventLog", "field": "process",
+                                      "rule_name": "Discovery commands in a short time"}},
+    "action:local_groups": {"splunk_rule": {"sourcetype": "XmlWinEventLog", "field": "process",
+                                            "rule_name": "Discovery commands in a short time"}},
+    "action:portproxy_show": {"falcon": "detect", "forward": False,
+                              "falcon_rule": "Port proxy tool used"},
+    "action:drop_marker_file": {"falcon": "prevent", "forward": True,
+                                "falcon_rule": "File written to temp by script"},
+    "action:dns_lookup_marker": {"splunk_rule": DNS_RULE},
+    # network_config, process_list, local_accounts, neighbours, tcp_probe: nothing sees them
 }
 
 
@@ -173,6 +190,83 @@ class FalconMock(BaseHTTPRequestHandler):
                                        if a["composite_id"] in wanted]})
 
 
+# ----------------------------------------------------------------------------
+# Mock OpenCTI: serves one report as a STIX bundle over GraphQL
+# ----------------------------------------------------------------------------
+REPORT_ID = "report--5a1d4f0e-0000-4000-8000-000000000001"
+
+
+def sample_bundle():
+    """A synthetic bundle in the shape OpenCTI exports.
+
+    Illustrative only: the technique list is modelled on public reporting about
+    living-off-the-land intrusions and is NOT an authoritative profile of any
+    named group. It exists to exercise the ants.
+    """
+    threat_id = "intrusion-set--5a1d4f0e-0000-4000-8000-0000000000aa"
+    rows = [
+        ("T1059.001", "PowerShell", "execution"),
+        ("T1059.003", "Windows Command Shell", "execution"),
+        ("T1070.001", "Clear Windows Event Logs", "defense-evasion"),
+        ("T1003.003", "NTDS", "credential-access"),
+        ("T1110.003", "Password Spraying", "credential-access"),
+        ("T1082", "System Information Discovery", "discovery"),
+        ("T1016", "System Network Configuration Discovery", "discovery"),
+        ("T1033", "System Owner/User Discovery", "discovery"),
+        ("T1057", "Process Discovery", "discovery"),
+        ("T1069.001", "Local Groups", "discovery"),
+        ("T1087.001", "Local Account", "discovery"),
+        ("T1018", "Remote System Discovery", "discovery"),
+        ("T1090.001", "Internal Proxy", "command-and-control"),
+        ("T1105", "Ingress Tool Transfer", "command-and-control"),
+    ]
+    objects = [{"type": "intrusion-set", "id": threat_id,
+                "name": "Sample living-off-the-land intrusion set",
+                "description": "Synthetic sample for the sandbox. Uses built-in system "
+                               "tools instead of malware."}]
+    for i, (attack_id, name, tactic) in enumerate(rows):
+        pattern_id = f"attack-pattern--5a1d4f0e-0000-4000-8000-{i:012d}"
+        objects.append({
+            "type": "attack-pattern", "id": pattern_id, "name": name,
+            "kill_chain_phases": [{"kill_chain_name": "mitre-attack", "phase_name": tactic}],
+            "external_references": [{"source_name": "mitre-attack", "external_id": attack_id}]})
+        objects.append({"type": "relationship", "id": f"relationship--5a1d4f0e-0000-4000-8000-{i:012d}",
+                        "relationship_type": "uses", "source_ref": threat_id,
+                        "target_ref": pattern_id})
+    note_id = "attack-pattern--5a1d4f0e-0000-4000-8000-0000000000ff"
+    objects.append({"type": "attack-pattern", "id": note_id,
+                    "name": "Operator tradecraft note without an ATT&CK id"})
+    objects.append({"type": "relationship", "id": "relationship--5a1d4f0e-0000-4000-8000-0000000000ff",
+                    "relationship_type": "uses", "source_ref": threat_id, "target_ref": note_id})
+    return {"type": "bundle", "id": "bundle--5a1d4f0e-0000-4000-8000-0000000000bb",
+            "objects": objects}
+
+
+class OpenCTIMock(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))).decode())
+        mode = MOCK.get("opencti_mode", "ok")
+        if mode == "auth" or not self.headers.get("Authorization", "").startswith("Bearer "):
+            code, out = 401, {"errors": [{"message": "You must be logged in"}]}
+        elif mode == "missing" or (body.get("variables") or {}).get("id") != REPORT_ID:
+            code, out = 200, {"data": {"report": None}}
+        elif mode == "not_a_bundle":
+            code, out = 200, {"data": {"report": {"toStixReportBundle": json.dumps({"type": "report"})}}}
+        elif mode == "no_techniques":
+            empty = dict(sample_bundle(), objects=sample_bundle()["objects"][:1])
+            code, out = 200, {"data": {"report": {"toStixReportBundle": json.dumps(empty)}}}
+        else:
+            code, out = 200, {"data": {"report": {"toStixReportBundle": json.dumps(sample_bundle())}}}
+        data = json.dumps(out).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(data)
+
+
 def start(handler, port):
     srv = ThreadingHTTPServer(("127.0.0.1", port), handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -214,15 +308,20 @@ class Ants:
         self.matcher = Matcher(self.rulebook)
         self.reporter = Reporter(WORK / "history.json")
         self.analyst = SearchAnalyst(WORK / "search_changes.jsonl")
+        self.builder = ScenarioBuilder(self.planner.actions, self.planner.not_simulated,
+                                       WORK / "scenarios")
+        self.opencti = OpenCTIClient(f"http://127.0.0.1:{OPENCTI_PORT}", "mock-only-token")
         self.runs = 0
 
-    def run(self, tests, hosts, before_step=None, label=None):
+    def run(self, tests, hosts, before_step=None, label=None, scenario=None):
         if self.runs:
             age_telemetry()          # the next run happens "an hour later"
         self.runs += 1
         before = dict(self.splunk.searches)
         print(f" RUN {self.runs}" + (f": {label}" if label else ""))
         event("run_start", n=self.runs, label=label or f"Run {self.runs}")
+        if callable(tests):
+            tests = tests()          # the intel ant and the builder work inside the run
         report = run_validation(
             planner=self.planner, gatekeeper=self.gatekeeper, agent=self.agent,
             observers=[self.splunk, self.falcon], matcher=self.matcher,
@@ -231,6 +330,13 @@ class Ants:
             before_step=before_step)
         report["splunk_searches"] = {k: self.splunk.searches[k] - before[k]
                                      for k in before}
+        report["teams"] = team_views(report, {
+            tid: self.planner.actions[t["action"]].get("category", "endpoint")
+            for tid, t in self.planner.tests.items()})
+        if scenario and scenario.get("scenario"):
+            built = scenario["scenario"]
+            report["scenario"] = {k: built.get(k) for k in
+                                  ("id", "name", "approved_by", "coverage", "skipped_patterns")}
         event("run_end", n=self.runs, report=report,
               audit=self.gatekeeper.read_audit()[-12:])
         for step in report["steps"]:
@@ -317,6 +423,115 @@ def s_repeat_run():
     if changes != ["confirmed", "confirmed", "confirmed", "none"]:
         fails.append(f"repeat-run search changes {changes}")
     return fails, "repeat run: 1 narrow search for the 3 remembered tests, 1 wide for the other"
+
+
+def build_from_opencti(ants):
+    """Intel ant reads the scenario from OpenCTI; the builder turns it into a draft."""
+    threat = IntelAnt.from_bundle(ants.opencti.report_bundle(REPORT_ID))
+    emit("Intel", f"Read '{threat.name}' from OpenCTI: {len(threat.techniques)} techniques"
+                  + (f", {len(threat.skipped)} entry without an ATT&CK id left out"
+                     if threat.skipped else ""), data=threat.to_dict())
+    draft = ants.builder.draft(threat)
+    gaps = [c for c in draft["coverage"] if c["status"] in ("not simulated", "no action")]
+    emit("Scenario builder", f"Draft '{draft['id']}': {len(draft['tests'])} tests built from the "
+                             f"action library; {len(gaps)} technique(s) cannot be tested",
+         status="stop" if gaps else "ok", data=draft)
+    return threat, draft
+
+
+def s_threat_scenario():
+    """Fetch a scenario from OpenCTI, build the tests, approve, run it in the sandbox."""
+    ants, fails, box = Ants(), [], {}
+
+    def build():
+        threat, draft = build_from_opencti(ants)
+        box.update(threat=threat, draft=draft)
+        try:
+            ants.planner.use_scenario(draft)
+            fails.append("an unapproved draft was accepted by the planner")
+        except ValueError:
+            pass
+        scenario = ants.builder.approve(draft["id"], "purple.lead")
+        emit("Scenario builder", f"Approved by {scenario['approved_by']}; the approval is bound to "
+                                 f"these {len(scenario['tests'])} tests")
+        box["scenario"] = scenario
+        return ants.planner.use_scenario(scenario)
+
+    r = ants.run(build, [HOST1], label="scenario from OpenCTI, built and run", scenario=box)
+    threat, draft = box["threat"], box["draft"]
+    if len(threat.techniques) != 14 or len(threat.skipped) != 1:
+        fails.append(f"intel read {len(threat.techniques)} techniques, {len(threat.skipped)} skipped")
+    status = {}
+    for c in draft["coverage"]:
+        status[c["status"]] = status.get(c["status"], 0) + 1
+    if status != {"simulated": 9, "partial": 2, "not simulated": 2, "no action": 1}:
+        fails.append(f"coverage {status}")
+    order = [t["technique"] for t in draft["tests"]]
+    if order[0] != "T1059.001" or order[-1] != "T1105" or len(order) != 11:
+        fails.append(f"test order {order}")
+    totals = r["totals"]
+    if (totals[DETECTED], totals[PREVENTED], totals[MISSED]) != (6, 1, 4) or r["detection_rate"] != 0.636:
+        fails.append(f"outcomes {totals}, rate {r['detection_rate']}")
+    want(fails, r, draft["id"] + "-T1090.001", DETECTED, finding="log pipeline gap")
+    want(fails, r, draft["id"] + "-T1105", PREVENTED)
+    want(fails, r, draft["id"] + "-T1016", MISSED)
+    if r["splunk_searches"]["wide"] != 1:
+        fails.append(f"Splunk searches {r['splunk_searches']}, expected one for all 11 steps")
+    teams = {t["team"]: t for t in r["teams"]}
+    if teams["NetOps"]["steps"] != 1 or teams["SecOps"]["steps"] != 10 or teams["Purple team"]["steps"] != 11:
+        fails.append(f"team views {r['teams']}")
+    r2 = ants.run(ants.planner.use_scenario(box["scenario"]), [HOST1], label="repeat run of the same scenario")
+    if r2["splunk_searches"]["narrow"] != 1 or r2["regressions"]:
+        fails.append(f"repeat run: searches {r2['splunk_searches']}, regressions {r2['regressions']}")
+    return fails, ("14 techniques from OpenCTI -> 11 tests built (9 full, 2 partial), 3 not testable; "
+                   "run: 6 Detected, 1 Prevented, 4 Missed, rate 64%; repeat run uses the memory")
+
+
+def s_scenario_guards():
+    """A scenario cannot be built from a broken source, run unapproved, or changed after approval."""
+    ants, fails = Ants(), []
+
+    def refused(label, fn, kinds=(ValueError, IntelError)):
+        try:
+            fn()
+            fails.append(f"NOT refused: {label}")
+        except kinds:
+            pass
+
+    for mode, label in (("auth", "OpenCTI rejects the sign-in"), ("missing", "report does not exist"),
+                        ("not_a_bundle", "answer is not a STIX bundle"),
+                        ("no_techniques", "bundle has no technique")):
+        MOCK["opencti_mode"] = mode
+        refused(label, lambda: IntelAnt.from_bundle(ants.opencti.report_bundle(REPORT_ID)))
+    MOCK["opencti_mode"] = "ok"
+    refused("OpenCTI unreachable", lambda: OpenCTIClient("http://127.0.0.1:9", "x").report_bundle(REPORT_ID))
+    if list((WORK / "scenarios").glob("*.json")) or TELEMETRY.splunk_rows:
+        fails.append("something was built or run from a broken source")
+
+    threat = IntelAnt.from_bundle(ants.opencti.report_bundle(REPORT_ID))
+    draft = ants.builder.draft(threat)
+    refused("planning an unapproved draft", lambda: ants.planner.use_scenario(draft))
+    refused("approval without a person", lambda: ants.builder.approve(draft["id"], "  "))
+    approved = ants.builder.approve(draft["id"], "purple.lead")
+    changed = json.loads(json.dumps(approved))
+    changed["tests"][0]["action"] = "tcp_probe"
+    refused("scenario changed after approval", lambda: ants.planner.use_scenario(changed))
+    sneaky = json.loads(json.dumps(draft))
+    sneaky["tests"].append({"id": "x", "title": "x", "technique": "T1003.003",
+                            "action": "dump_credentials", "expect": {"splunk": "detection"}})
+    ants.builder.save(sneaky)
+    refused("approving a test whose action is not on the allow-list",
+            lambda: ants.builder.approve(draft["id"], "purple.lead"))
+    if any(not c["action"] for c in draft["coverage"] if c["status"] in ("simulated", "partial")) \
+            or any(c["action"] for c in draft["coverage"] if c["status"] in ("not simulated", "no action")):
+        fails.append("coverage table is inconsistent")
+    if any(t["technique"].startswith(("T1003", "T1070", "T1110")) for t in draft["tests"]):
+        fails.append("a technique without a safe action got a test")
+    emit("Scenario builder", "Refused: broken or unreachable OpenCTI, unapproved draft, approval "
+                             "without a person, scenario changed after approval, action off the allow-list",
+         status="stop")
+    return fails, ("9 refusals: broken sources, unapproved draft, nameless approval, change after "
+                   "approval, action off the allow-list")
 
 
 def s_search_changes():
@@ -755,6 +970,8 @@ def s_drift():
 
 
 SCENARIOS = {
+    "threat_scenario": ("Scenario from OpenCTI, built and run", s_threat_scenario),
+    "scenario_guards": ("Scenario builder: what it refuses", s_scenario_guards),
     "full_run": ("All ants, one run", s_full_run),
     "repeat_run": ("Repeat run uses the memory", s_repeat_run),
     "search_changes": ("Analyst: search changes and why", s_search_changes),
@@ -806,6 +1023,7 @@ def main():
         sys.exit(2)
     logging.basicConfig(level=logging.CRITICAL)
     splunk, falcon = start(SplunkMock, SPLUNK_PORT), start(FalconMock, FALCON_PORT)
+    start(OpenCTIMock, OPENCTI_PORT)
     print("=" * 78 + f"\n SCENARIO: {SCENARIO} - {SCENARIOS[SCENARIO][0]}\n" + "=" * 78)
     fails, note = SCENARIOS[SCENARIO][1]()
     print("=" * 78)

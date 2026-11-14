@@ -50,7 +50,10 @@ class SimulatedAgent:
         # Sandbox clock: the step ran a few minutes ago, so its alerts are due.
         step.start = self._now() - timedelta(minutes=4)
         step.end = self._now() - timedelta(minutes=1)
-        self._emit(step, self.defences.get(step.test_id, {}))
+        # A profile for the exact test wins; otherwise the one for its action.
+        profile = (self.defences[step.test_id] if step.test_id in self.defences
+                   else self.defences.get("action:" + step.action, {}))
+        self._emit(step, profile)
         return entry
 
     def _emit(self, step: Step, profile: dict[str, Any]) -> None:
