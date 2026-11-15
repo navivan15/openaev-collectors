@@ -109,6 +109,8 @@ SCENARIOS = {
     # --- could not check causes -----------------------------------------------
     "cnc_unreachable":   {"outcome": "Could not check", "reason": "source_unreachable"},
     "cnc_missing_index": {"outcome": "Could not check", "reason": "data_source_missing"},
+    # the index exists, but the account's role may not search it (found on a real Splunk)
+    "cnc_unreadable_index": {"outcome": "Could not check", "reason": "data_source_missing"},
     "cnc_search_error":  {"outcome": "Could not check", "reason": "search_failed"},
     # connection drops on the search itself (index check answered fine)
     "cnc_wide_conn":     {"outcome": "Could not check", "reason": "source_unreachable",
@@ -159,6 +161,9 @@ CATALOGUE = [
          "Nothing answers on the Splunk port."),
         ("cnc_missing_index", "The index does not exist",
          "The configured index is missing, so an empty search would prove nothing."),
+        ("cnc_unreadable_index", "The account may not search the index",
+         "The index exists, but the account's role does not allow it. A real Splunk answers such a "
+         "search with nothing and no error."),
         ("cnc_search_error", "Splunk reports a failed search",
          "Splunk returns no rows and an error message."),
         ("cnc_wide_conn", "Connection drops during the wide search",
@@ -399,6 +404,16 @@ class SplunkHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        path = self.path.split("?", 1)[0]
+        if SCENARIO == "cnc_unreadable_index" and path == "/services/authentication/current-context":
+            self._send_json(200, {"entry": [{"content": {"username": "svc_openaev",
+                                                         "roles": ["oaev_reader"]}}]})
+            return
+        if SCENARIO == "cnc_unreadable_index" and path == "/services/authorization/roles/oaev_reader":
+            self._send_json(200, {"entry": [{"content": {
+                "srchIndexesAllowed": ["some_other_index"], "imported_srchIndexesAllowed": []}}]})
+            log_wire("SPLUNK", "res", "role oaev_reader may search: some_other_index")
+            return
         if not self.path.startswith("/services/data/indexes/"):
             self._send_json(404, {})
             return

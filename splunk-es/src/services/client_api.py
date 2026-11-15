@@ -4,6 +4,7 @@ import logging
 import string
 import time
 from datetime import timedelta
+from fnmatch import fnmatchcase
 from typing import Any
 from urllib.parse import quote
 
@@ -293,6 +294,14 @@ class SplunkESClientAPI:
                 f"Splunk index '{index}' does not exist or this account cannot read it"
             )
         if response.status_code == 200:
+            # The index exists. That does not mean this account may search it:
+            # a search of an index the account's roles do not allow returns
+            # zero rows and no error, exactly like an empty index.
+            if self._index_searchable(index) is False:
+                raise SplunkESIndexNotFoundError(
+                    f"Splunk index '{index}' exists, but this account's roles "
+                    f"do not allow searching it"
+                )
             self._index_checked_at = now
             return
         # 403 and others: we cannot verify, so let the search itself decide.
@@ -300,6 +309,53 @@ class SplunkESClientAPI:
             f"{LOG_PREFIX} Could not verify index '{index}' "
             f"(HTTP {response.status_code}); continuing with the search"
         )
+
+    @staticmethod
+    def _index_pattern_matches(index: str, pattern: str) -> bool:
+        """Splunk's own rule: '*' does not cover internal (underscore) indexes."""
+        if index.startswith("_") and not pattern.startswith("_"):
+            return False
+        return fnmatchcase(index.lower(), pattern.lower())
+
+    def _index_searchable(self, index: str) -> bool | None:
+        """Whether this account's roles allow searching ``index``.
+
+        Reads the account's own context and its roles (both readable by a
+        search-only account). Returns None when Splunk does not let us tell,
+        in which case the search goes ahead as before.
+        """
+        try:
+            context = self.session.get(
+                f"{self.base_url}/services/authentication/current-context",
+                params={"output_mode": "json"},
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            if context.status_code != 200:
+                return None
+            roles = context.json()["entry"][0]["content"]["roles"]
+            if not isinstance(roles, list) or not roles:
+                return None
+            allowed: list[str] = []
+            disallowed: list[str] = []
+            for role in roles:
+                answer = self.session.get(
+                    f"{self.base_url}/services/authorization/roles/"
+                    f"{quote(str(role), safe='')}",
+                    params={"output_mode": "json"},
+                    timeout=REQUEST_TIMEOUT_SECONDS,
+                )
+                if answer.status_code != 200:
+                    return None
+                content = answer.json()["entry"][0]["content"]
+                for key in ("srchIndexesAllowed", "imported_srchIndexesAllowed"):
+                    allowed += [str(v) for v in content.get(key) or []]
+                for key in ("srchIndexesDisallowed", "imported_srchIndexesDisallowed"):
+                    disallowed += [str(v) for v in content.get(key) or []]
+        except (RequestException, ValueError, KeyError, IndexError, TypeError):
+            return None
+        if any(self._index_pattern_matches(index, p) for p in disallowed):
+            return False
+        return any(self._index_pattern_matches(index, p) for p in allowed)
 
     def fetch_signatures(
         self, search_signatures: list[dict[str, Any]], expectation_type: str

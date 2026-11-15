@@ -256,7 +256,8 @@ When a Splunk event is a forwarded CrowdStrike Falcon alert, its Falcon alert id
 alert name next to the index, sourcetype, matched field and rule, for example
 `[index=main sourcetype=crowdstrike:events:sensor field=process rule=... falcon_alert_id=...]`. The `crowdstrike`
 collector identifies the same alert by that id, so a later step can count the detection once. These field names come
-from the Falcon add-on's usual event layout and have not been checked against real forwarded data.
+from the Falcon add-on's usual event layout. A lab Splunk returned the nested `event.CompositeId` of a synthetic
+event under exactly that name; real forwarded Falcon data has not been checked.
 
 ### Step matching
 
@@ -345,7 +346,16 @@ The page has two views.
   scorecard breaks the result down by attack type and shows the analyst's search-change log and the gatekeeper's audit
   log. The `validation-ants` scenarios are listed with the collector's under "All checks".
 
-The demo proves the logic on synthetic data. It does not prove how a real Splunk or a real Falcon tenant behaves.
+The demo proves the logic on synthetic data. It does not prove how a real Falcon tenant behaves. The index check,
+the marker search, the repeat-run narrow search and the trace's Falcon alert id have also been run against a real
+Splunk Enterprise in a lab container, with synthetic events only: see "Lab Splunk" in `validation-ants/README.md`.
+
+**An index the account may not search.** That lab run found that a search-only account gets HTTP 200 for an index
+that exists but that its roles do not allow, and that a search of it returns nothing with no error. The index check
+therefore also reads the account's own roles (`/services/authentication/current-context` and
+`/services/authorization/roles/<role>`, both readable by a search-only account) and reports `Could not check`
+(`data_source_missing`) when none of them allows the configured index. When Splunk does not answer those two
+requests, the check is skipped and the search goes ahead as before.
 
 Search counts in the mock: one step costs 1 wide search on a first run and 1 narrow search on a repeat run. When the
 first run has to poll for a late alert it costs 2 or more; the repeat run still costs 1. Three steps in one cycle cost

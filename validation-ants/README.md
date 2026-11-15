@@ -171,8 +171,10 @@ explains that blocking is a Falcon policy change for a person to make once the d
 never change Falcon.
 
 The search text in a proposal is rendered from the same logic the ant tested, and it passes the collector's
-validator, but it has not been run by a real Splunk. Treat it as a starting point for the reviewer. The noise figure
-comes from the sandbox's synthetic day of admin activity, not from your environment.
+validator. A lab Splunk Enterprise accepted every proposed search and returned the test host (see "Lab Splunk"
+below), on synthetic logs where the command line is in a field called `process`. Your own logs may name that field
+differently, so treat the search as a starting point for the reviewer. The noise figure comes from the sandbox's
+synthetic day of admin activity, not from your environment.
 
 The library has nine detections today: eight single-command ones and one that needs several discovery tools from the
 same host within five minutes. In the sandbox the single-command ones come out `too noisy` and the combined one comes
@@ -214,9 +216,46 @@ not check into Missed); it reported wrong calls for both and none once they were
 The playground is still a simulation: the "defences" are the sandbox's own synthetic telemetry. It measures whether
 the ants read that telemetry correctly, not whether your real tools detect anything.
 
+## Lab Splunk: the same checks against a real Splunk Enterprise
+
+The mock Splunk is something I wrote, so it can only prove what I assumed. `lab_splunk.py` repeats the important
+checks against a real Splunk Enterprise in a container on this machine:
+
+```shell
+splunk-es/.venv/Scripts/python validation-ants/lab_splunk.py            # all groups
+splunk-es/.venv/Scripts/python validation-ants/lab_splunk.py reader     # one group
+```
+
+- It talks to `127.0.0.1` only and refuses any other address, so it cannot be pointed at a real Splunk by mistake.
+- Every event it sends is synthetic and made by the script, through the container's event collector with the
+  event's own time. No real log is read or sent.
+- The admin password, the event-collector token and the read-only account's password live in a file outside the
+  repository (`OAEV_LAB_ENV`, default `~/.oaev-lab/splunk-lab.env`) and are never printed.
+- Falcon stays a mock. Only Splunk is real.
+
+Result on Splunk Enterprise 10.6.1.1 (2026-11-15), 30 checks:
+
+| Group | What was checked | Result |
+|---|---|---|
+| wire | Index check for an index that exists and one that does not; a search of a missing index; a wrong password; a search Splunk cannot parse | As assumed. A missing index gives 404, and a search of it gives no rows and no error, so the index check is what stops a false `Missed`. |
+| markers | A step marker in a command line, a parent process name, a file name, a looked-up hostname, without hyphens, in upper case | All found and tied to the right field. |
+| markers | A marker glued inside a longer word (`x<marker>y`) | Not found. Splunk searches whole words. The mock found it; the mock now behaves like Splunk. |
+| run | Every ant, first run and repeat run, four tests | Detected, Prevented, Detected, Missed, both times. 1 wide search on the first run; 1 narrow + 1 wide on the repeat run. The Falcon alert's copy in Splunk is counted once, and its alert id is read from the nested `event.CompositeId` field. |
+| detections | The detection engineer reads the endpoint logs from the lab, tests the detections, and each proposed search is run by Splunk | Same proposals as on the mock. Splunk accepted every search and returned the test host. |
+| reader | The same through an account whose only capability is `search`, limited to two indexes | Works, and that account cannot change Splunk (creating an index answers 403). |
+| reader | An index that exists, but that the account's role may not search | **This was a hole.** The index check passed and the search returned nothing, which would have been scored `Missed`. The collector now reads the account's own roles and reports `Could not check` instead. |
+
+Also learned: Splunk gives the event time with milliseconds and a UTC offset (the collector already read that
+correctly; the mock now answers the same way).
+
+What the lab does not show: your real sourcetypes and field names (they depend on the add-ons installed), a real
+Falcon forwarding its alerts, search speed on real volumes, or a search head cluster. The lab is one small Splunk
+with synthetic events.
+
 ## What this is not
 
-- Not run against a real Splunk, a real Falcon tenant or a real host. How those behave is unverified.
+- Run against a lab Splunk Enterprise with synthetic events (above), but not against your Splunk, a real Falcon
+  tenant or a real host. How those behave is unverified.
 - The Falcon observer is new and small. The fork's own `crowdstrike` collector is untouched: it still returns no
   alerts when the Falcon API fails, which leaves its expectations to expire as failed.
 - A network step has no marker. An addresses-only match is flagged as weak, not checked against a quiet window.

@@ -139,8 +139,11 @@ class SplunkMock(BaseHTTPRequestHandler):
         # sourcetype="X" (narrow search) limits the rows; other quoted strings are terms.
         indexes = set(re.findall(r"\bindex=([\w\-.]+)", base))
         sourcetypes = set(re.findall(r'sourcetype="([^"]+)"', base))
-        terms = [t.rstrip("*").lower() for t in re.findall(r'"([^"]+)"', base)
-                 if t not in sourcetypes]
+        # Like a real Splunk, a quoted term has to be a word of its own: a marker glued
+        # inside a longer word is not found. (Checked against Splunk Enterprise 10.6.)
+        terms = [re.compile(r"(?<![a-z0-9])" + re.escape(t.rstrip("*").lower())
+                            + ("" if t.endswith("*") else r"(?![a-z0-9])"))
+                 for t in re.findall(r'"([^"]+)"', base) if t not in sourcetypes]
         earliest = int(re.search(r"earliest=(\d+)", base).group(1))
         latest = int(re.search(r"latest=(\d+)", base).group(1))
         rows = []
@@ -152,8 +155,9 @@ class SplunkMock(BaseHTTPRequestHandler):
             if indexes and row.get("index", "main") not in indexes:
                 continue
             text = " ".join(str(v) for v in row.values()).lower()
-            if not terms or any(t in text for t in terms):
-                rows.append(row)
+            if not terms or any(t.search(text) for t in terms):
+                # A real Splunk gives the time with milliseconds and a UTC offset.
+                rows.append(dict(row, _time=row["_time"] + ".000+00:00"))
         self._json(200, {"results": rows})
 
 
@@ -299,8 +303,9 @@ def start(handler, port):
 # The ants, wired together
 # ----------------------------------------------------------------------------
 class Ants:
-    def __init__(self, scope=None, work=None):
+    def __init__(self, scope=None, work=None, splunk_env=None):
         work = work or WORK
+        splunk_env = splunk_env or {}     # lab_splunk.py points the readers at a lab Splunk
         now = datetime.now(timezone.utc)
         self.planner = Planner()
         self.scope = scope or {
@@ -324,12 +329,13 @@ class Ants:
             "SPLUNKES_ALERTS_INDEX": "main", "SPLUNKES_MAX_RETRY": "0",
             "SPLUNKES_OFFSET": "PT1S", "SPLUNKES_VERIFY_SSL": "false",
             "SPLUNKES_MEMORY_PATH": str(work / "location_memory.json"),
+            **splunk_env,
         })
         seed_baseline()
         # A second, read-only view of Splunk: the plain endpoint logs, through the
         # same checked search path, for the detection engineer.
         self.raw = SplunkObserver({
-            "SPLUNKES_ALERTS_INDEX": RAW_INDEX,
+            **splunk_env, "SPLUNKES_ALERTS_INDEX": RAW_INDEX,
             "SPLUNKES_MEMORY_PATH": str(work / "raw_reader_memory.json")})
         from src.services.spl_validator import validate_spl
         self.engineer = DetectionEngineer(self.raw.candidates, validate_spl, RAW_INDEX,
