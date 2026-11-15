@@ -32,6 +32,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -47,8 +48,19 @@ SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "detected"
 EVENTS = []   # structured record of the run, for the demo page
 
 
+STARTED = time.time()
+EVENTS_STREAM = os.environ.get("HARNESS_EVENTS_STREAM")
+# Several harness runs can sit side by side when each gets its own two mock ports.
+SPLUNK_PORT = int(os.environ.get("HARNESS_SPLUNK_PORT", "18089"))
+OPENAEV_PORT = int(os.environ.get("HARNESS_OPENAEV_PORT", "18080"))
+
+
 def event(type_, **data):
-    EVENTS.append({"type": type_, **data})
+    item = {"type": type_, "t": round(time.time() - STARTED, 3), **data}
+    EVENTS.append(item)
+    if EVENTS_STREAM:               # one line per event, as it happens
+        with open(EVENTS_STREAM, "a", encoding="utf-8") as out:
+            out.write(json.dumps(item, default=str) + "\n")
 
 
 def dump_events():
@@ -507,12 +519,12 @@ MEMORY_FILE = Path(tempfile.mkdtemp(prefix="oaev-harness-")) / "location_memory.
 
 def set_env(**overrides):
     env = {
-        "OPENAEV_URL": "http://127.0.0.1:18080",
+        "OPENAEV_URL": f"http://127.0.0.1:{OPENAEV_PORT}",
         "OPENAEV_TOKEN": "test-token-1234",
         "COLLECTOR_ID": "splunkes--0b13e3f7-5c9e-46f5-acc4-33032e9b4921",
         "COLLECTOR_NAME": "SplunkES",
         "COLLECTOR_PERIOD": "PT1M",
-        "SPLUNKES_BASE_URL": "http://127.0.0.1:18089",
+        "SPLUNKES_BASE_URL": f"http://127.0.0.1:{SPLUNK_PORT}",
         "SPLUNKES_USERNAME": "svc_openaev",
         "SPLUNKES_PASSWORD": "s3cr3t",
         "SPLUNKES_ALERTS_INDEX": "main",
@@ -1090,8 +1102,8 @@ def main():
         sys.exit(2)
 
     logging.basicConfig(level=logging.WARNING, format="%(message)s")
-    splunk = start(SplunkHandler, 18089)
-    openaev = start(OpenAEVHandler, 18080)
+    splunk = start(SplunkHandler, SPLUNK_PORT)
+    openaev = start(OpenAEVHandler, OPENAEV_PORT)
     print("=" * 78)
     print(f" SCENARIO: {SCENARIO}")
     print("=" * 78)

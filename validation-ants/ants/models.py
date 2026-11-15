@@ -98,6 +98,8 @@ class StepVerdict:
             "step_id": self.step.id,
             "test_id": self.step.test_id,
             "title": self.step.title,
+            "technique": self.step.technique,
+            "action": self.step.action,
             "host": self.step.host,
             "outcome": self.outcome,
             "reason": self.reason,

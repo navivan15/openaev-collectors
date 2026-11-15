@@ -4,158 +4,380 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Detection Validation Sandbox</title>
+<link rel="icon" href="data:,">
 <style>
 :root {
-  --bg: #f5f6f8; --panel: #ffffff; --panel-2: #f9fafb; --line: #e2e5ea; --line-2: #eef0f3;
-  --text: #171a21; --muted: #5d6676; --faint: #8a93a3;
-  --accent: #2f55d4; --accent-ink: #ffffff; --accent-soft: #e9eefc;
-  --ok: #17794a; --ok-soft: #e3f4ea; --miss: #b3261e; --miss-soft: #fbe9e7;
-  --cnc: #8a5a00; --cnc-soft: #fdf1d7; --prev: #1f5fa8; --prev-soft: #e4effb;
-  --code-bg: #f3f4f7; --narrow: #7a3fc4; --wide: #2f55d4;
+  --bg: #f3f4f7; --panel: #ffffff; --panel-2: #f7f8fa; --line: #dde1e8; --line-2: #ebeef2;
+  --text: #12151c; --muted: #4f596a; --faint: #768095;
+  --accent: #2f55d4; --accent-ink: #ffffff; --accent-soft: #e8edfc;
+  --ok: #14713f; --ok-soft: #e1f3e8; --miss: #b3261e; --miss-soft: #fbe8e6;
+  --cnc: #865600; --cnc-soft: #fcefd2; --prev: #1c5aa3; --prev-soft: #e2edfa;
+  --code-bg: #f1f3f6; --narrow: #7a3fc4; --wide: #2f55d4;
+  --con-bg: #0b0e13; --con-text: #d5dbe6; --con-dim: #7d8798; --con-line: #1c222c;
   --mono: ui-monospace, "SF Mono", "Cascadia Code", Consolas, "Liberation Mono", monospace;
   --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --top: 64px;
 }
 @media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0f1218; --panel: #171b23; --panel-2: #1b202a; --line: #2a303c; --line-2: #222833;
-    --text: #e8ebf1; --muted: #a2abbb; --faint: #7a8496;
-    --accent: #7f9cff; --accent-ink: #0c1020; --accent-soft: #1f2a4d;
-    --ok: #5fd39a; --ok-soft: #153325; --miss: #ff8a80; --miss-soft: #3b1a18;
-    --cnc: #f2c35c; --cnc-soft: #3a2d0e; --prev: #86bdfb; --prev-soft: #15293f;
-    --code-bg: #11151c; --narrow: #c09bff; --wide: #7f9cff;
+  :root:not([data-theme="light"]) {
+    --bg: #0c0f14; --panel: #151a22; --panel-2: #1a202a; --line: #2b323e; --line-2: #222933;
+    --text: #e9edf3; --muted: #a8b2c2; --faint: #7f899b;
+    --accent: #8aa4ff; --accent-ink: #0b1022; --accent-soft: #1d2848;
+    --ok: #62d49b; --ok-soft: #133224; --miss: #ff8d83; --miss-soft: #3a1917;
+    --cnc: #f2c35c; --cnc-soft: #382b0d; --prev: #88bdfb; --prev-soft: #14283e;
+    --code-bg: #10141b; --narrow: #c09bff; --wide: #8aa4ff;
   }
+}
+:root[data-theme="dark"] {
+  --bg: #0c0f14; --panel: #151a22; --panel-2: #1a202a; --line: #2b323e; --line-2: #222933;
+  --text: #e9edf3; --muted: #a8b2c2; --faint: #7f899b;
+  --accent: #8aa4ff; --accent-ink: #0b1022; --accent-soft: #1d2848;
+  --ok: #62d49b; --ok-soft: #133224; --miss: #ff8d83; --miss-soft: #3a1917;
+  --cnc: #f2c35c; --cnc-soft: #382b0d; --prev: #88bdfb; --prev-soft: #14283e;
+  --code-bg: #10141b; --narrow: #c09bff; --wide: #8aa4ff;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
-body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--sans); }
-button { font: inherit; color: inherit; cursor: pointer; }
-h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+body { background: var(--bg); color: var(--text); font: 16px/1.55 var(--sans); }
+button, input { font: inherit; color: inherit; }
+button { cursor: pointer; }
+h1, h2, h3 { margin: 0; font-weight: 700; letter-spacing: -0.015em; line-height: 1.25; }
+[hidden] { display: none !important; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-.top { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 14px;
-  padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
-.brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-.brand h1 { font-size: 16px; white-space: nowrap; }
-.brand span { color: var(--muted); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mock { margin-left: auto; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 600;
+/* ---------- top bar ---------- */
+.top { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 22px; height: var(--top);
+  padding: 0 28px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.brand { display: flex; align-items: center; gap: 11px; white-space: nowrap; }
+.brand .mark { width: 30px; height: 30px; border-radius: 8px; background: var(--accent); position: relative; flex: none; }
+.brand .mark::after { content: ""; position: absolute; left: 9px; top: 6px; width: 8px; height: 14px;
+  border: solid var(--accent-ink); border-width: 0 3px 3px 0; transform: rotate(40deg); }
+.brand b { font-size: 18px; font-weight: 750; letter-spacing: -0.02em; }
+.tabs { display: flex; align-self: stretch; gap: 4px; }
+.tab { border: 0; background: none; padding: 0 16px; font-size: 16px; font-weight: 650; color: var(--muted);
+  border-bottom: 3px solid transparent; border-top: 3px solid transparent; display: flex; align-items: center; gap: 8px; }
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.badge { min-width: 22px; padding: 0 7px; border-radius: 999px; background: var(--accent); color: var(--accent-ink);
+  font-size: 13px; font-weight: 700; line-height: 22px; text-align: center; }
+.mock { margin-left: auto; padding: 6px 13px; border-radius: 999px; font-size: 14px; font-weight: 650;
   background: var(--cnc-soft); color: var(--cnc); white-space: nowrap; }
-.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 7px 14px; font-weight: 600;
-  white-space: nowrap; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 9px; padding: 9px 16px; font-weight: 650;
+  font-size: 15px; white-space: nowrap; }
 .btn:hover { border-color: var(--faint); }
 .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
-.btn:disabled { opacity: .55; cursor: default; }
-.btn:focus-visible, .test:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn.small { padding: 6px 12px; font-size: 14px; }
+.btn.link { border: 0; background: none; padding: 4px 6px; color: var(--accent); }
+.btn:disabled { opacity: .5; cursor: default; }
 
-.layout { display: grid; grid-template-columns: 330px minmax(0, 1fr); min-height: calc(100vh - 53px); }
-.layout > * { min-width: 0; }
-.side { border-right: 1px solid var(--line); background: var(--panel); padding: 14px 10px 30px; overflow-y: auto;
-  max-height: calc(100vh - 53px); position: sticky; top: 53px; }
-.side h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--faint); padding: 14px 10px 6px; }
-.side h2:first-child { padding-top: 2px; }
-.test { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; border: 0; background: none;
-  padding: 7px 10px; border-radius: 8px; }
-.test:hover { background: var(--panel-2); }
-.test[aria-current="true"] { background: var(--accent-soft); }
-.test .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; font-size: 12px;
-  font-weight: 600; white-space: nowrap; }
-.chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+main { padding: 28px 28px 80px; }
+.page-head { margin-bottom: 20px; }
+.page-head h1 { font-size: 30px; }
+.page-head p { margin: 6px 0 0; color: var(--muted); font-size: 17px; max-width: 86ch; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; }
+.card > header { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid var(--line-2); flex-wrap: wrap; }
+.card > header h3 { font-size: 18px; }
+.card > header .sub { color: var(--muted); font-size: 14.5px; }
+.card .body { padding: 16px 18px; }
+.empty { color: var(--muted); padding: 34px 18px; text-align: center; font-size: 16px; }
+.label { font-size: 12.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); font-weight: 700; }
+
+/* ---------- chips ---------- */
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-size: 13.5px;
+  font-weight: 650; white-space: nowrap; }
+.chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
 .chip.det { background: var(--ok-soft); color: var(--ok); }
 .chip.mis { background: var(--miss-soft); color: var(--miss); }
 .chip.cnc { background: var(--cnc-soft); color: var(--cnc); }
 .chip.prv { background: var(--prev-soft); color: var(--prev); }
 .chip.neu { background: var(--line-2); color: var(--muted); }
 .chip.bad { background: var(--miss); color: #fff; }
+.chip.run { background: var(--accent-soft); color: var(--accent); }
+.chip.run::before { animation: pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+.tactic { display: inline-flex; align-items: center; gap: 7px; padding: 3px 10px 3px 8px; border-radius: 7px; font-size: 13.5px;
+  font-weight: 650; white-space: nowrap; background: color-mix(in srgb, var(--tc) 15%, var(--panel));
+  border: 1px solid color-mix(in srgb, var(--tc) 50%, var(--line)); }
+.tactic i, .fchip i, .sw { width: 11px; height: 11px; border-radius: 3px; background: var(--tc); flex: none; display: inline-block; }
+.sws { display: inline-flex; gap: 4px; align-items: center; vertical-align: middle; }
 
-main { padding: 22px 26px 60px; min-width: 0; }
-.head { display: flex; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
-.head h2 { font-size: 22px; }
-.head p { margin: 4px 0 0; color: var(--muted); max-width: 70ch; }
-.head .btn { margin-left: auto; flex: none; }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 16px; }
-.card > header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--line-2); }
-.card > header h3 { font-size: 14px; }
-.card > header .sub { color: var(--muted); font-size: 13px; }
-.card .body { padding: 14px 16px; }
-.empty { color: var(--muted); padding: 26px 16px; text-align: center; }
+/* ---------- attack library ---------- */
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 14px; margin-bottom: 18px; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 18px; }
+.stat .v { font-size: 30px; font-weight: 750; letter-spacing: -0.02em; line-height: 1.15; margin-top: 2px; }
+.stat .x { color: var(--muted); font-size: 14.5px; }
+.filters { padding: 16px 18px; margin-bottom: 14px; display: grid; gap: 14px; }
+.search { width: 100%; max-width: 520px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line);
+  background: var(--panel-2); font-size: 16px; }
+.frow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.frow .label { margin-right: 4px; min-width: 96px; }
+.fchip { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px 7px 10px; border-radius: 9px; font-size: 15px;
+  font-weight: 650; background: var(--panel); border: 1.5px solid var(--line); }
+.fchip:hover { border-color: color-mix(in srgb, var(--tc) 70%, var(--line)); }
+.fchip .n { font-size: 13px; color: var(--muted); font-weight: 600; }
+.fchip[aria-pressed="true"] { background: color-mix(in srgb, var(--tc) 20%, var(--panel)); border-color: var(--tc); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; background: var(--panel); }
+.seg button { border: 0; background: none; padding: 7px 13px; font-size: 14.5px; font-weight: 600; color: var(--muted);
+  border-left: 1px solid var(--line); }
+.seg button:first-child { border-left: 0; }
+.seg button[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); }
+.fgroup { display: inline-flex; align-items: center; gap: 8px; margin-right: 14px; }
+details.legend summary { cursor: pointer; color: var(--muted); font-size: 14.5px; }
+details.legend .lg { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 8px 18px; margin-top: 10px; font-size: 14.5px; color: var(--muted); }
+details.legend .lg div { display: flex; gap: 9px; align-items: baseline; }
+.lib-meta { display: flex; align-items: center; gap: 10px; margin: 0 2px 12px; color: var(--muted); font-size: 15px; flex-wrap: wrap; }
+.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(370px, 1fr)); gap: 16px; }
+.attack { background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--tc); border-radius: 14px;
+  padding: 16px 18px 16px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.attack.sel { outline: 2px solid var(--accent); outline-offset: -1px; background: color-mix(in srgb, var(--accent-soft) 45%, var(--panel)); }
+.attack.refused { background: repeating-linear-gradient(135deg, var(--panel) 0 14px, var(--panel-2) 14px 28px); }
+.a-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tid { font-family: var(--mono); font-size: 14px; font-weight: 600; color: var(--muted); }
+.a-top .sp { flex: 1; }
+.attack h3 { font-size: 19px; }
+.attack .desc { margin: 0; color: var(--muted); font-size: 15.5px; }
+.cmd { font-family: var(--mono); font-size: 13.5px; background: var(--code-bg); border: 1px solid var(--line-2); border-radius: 8px;
+  padding: 9px 11px; overflow-wrap: anywhere; }
+.facts { margin: 0; display: grid; gap: 7px; font-size: 14.5px; }
+.facts > div { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 10px; }
+.facts dt { color: var(--faint); font-weight: 600; }
+.facts dd { margin: 0; }
+.attack .pick { margin-top: auto; align-self: flex-start; }
+.attack .pick[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.tray { position: fixed; left: 16px; right: 16px; bottom: 18px; margin: 0 auto; z-index: 30; max-width: 1180px;
+  background: var(--panel); border: 1.5px solid var(--accent); border-radius: 16px; padding: 14px 18px;
+  display: flex; align-items: center; gap: 12px 16px; flex-wrap: wrap; box-shadow: 0 8px 28px rgba(8, 12, 24, .22); }
+.tray b { font-size: 17px; }
+.tray input[type="text"] { padding: 8px 12px; border-radius: 9px; border: 1px solid var(--line); background: var(--panel-2); width: 190px; font-size: 15px; }
+.tray .actions { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.tray .fgroup { margin-right: 0; }
+.tray .err { color: var(--miss); font-size: 14.5px; flex-basis: 100%; }
 
-.stages { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; padding: 14px 16px 4px; }
-.stage { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--panel-2); min-width: 0; }
-.stage .n { font-size: 11px; color: var(--faint); }
-.stage .l { font-weight: 600; font-size: 13px; line-height: 1.25; margin: 1px 0; overflow-wrap: anywhere; }
-.stage .s { font-size: 12px; color: var(--muted); line-height: 1.3; overflow-wrap: anywhere; }
+/* ---------- sandbox ---------- */
+.launch { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-bottom: 14px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: grid; gap: 6px; align-content: start; }
+.tile .th { display: flex; align-items: center; gap: 10px; }
+.tile h3 { font-size: 17.5px; flex: 1; }
+.tile p { margin: 0; color: var(--muted); font-size: 14.5px; }
+details.checks { margin-bottom: 14px; }
+details.checks > summary { cursor: pointer; padding: 14px 18px; font-weight: 650; font-size: 16.5px; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; list-style: none; }
+details.checks > summary::-webkit-details-marker { display: none; }
+details.checks > summary::before { content: "▸"; color: var(--faint); }
+details.checks[open] > summary::before { content: "▾"; }
+details.checks > summary .sub { color: var(--muted); font-weight: 500; font-size: 15px; }
+details.checks > summary .sp { flex: 1; }
+.checks .inner { padding: 4px 18px 16px; border-top: 1px solid var(--line-2); display: grid; gap: 12px; }
+.checklist { max-height: 420px; overflow-y: auto; border: 1px solid var(--line-2); border-radius: 10px; }
+.crow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 10px 14px; border-top: 1px solid var(--line-2); }
+.crow:first-child { border-top: 0; }
+.crow .t { font-weight: 650; font-size: 15.5px; }
+.crow .d { color: var(--muted); font-size: 14px; }
+.strip { display: flex; align-items: center; gap: 10px 22px; flex-wrap: wrap; padding: 12px 18px; margin-bottom: 14px; }
+.strip .num { display: flex; align-items: baseline; gap: 7px; font-size: 15px; color: var(--muted); }
+.strip .num b { font-size: 24px; color: var(--text); font-weight: 750; }
+.strip .sp { flex: 1; }
+.strip .hint { color: var(--muted); font-size: 14px; flex-basis: 100%; margin-top: -4px; }
+.work { display: grid; grid-template-columns: 400px minmax(0, 1fr); gap: 18px; align-items: start; }
+.jobs { position: sticky; top: calc(var(--top) + 14px); max-height: calc(100vh - var(--top) - 28px); overflow-y: auto; display: grid; gap: 10px;
+  grid-template-columns: minmax(0, 1fr); padding: 2px 4px 2px 2px; align-content: start; }
+.jobs h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); margin: 8px 2px 0; }
+.jobs h2:first-child { margin-top: 0; }
+.job { text-align: left; width: 100%; background: var(--panel); border: 1px solid var(--line); border-left: 6px solid var(--faint); border-radius: 12px;
+  padding: 12px 14px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.job > * { pointer-events: none; }
+.job:hover { border-color: var(--faint); }
+.job[data-phase="running"], .job[data-phase="showing"] { border-left-color: var(--accent); }
+.job[data-phase="ok"] { border-left-color: var(--ok); }
+.job[data-phase="bad"] { border-left-color: var(--miss); }
+.job[aria-current="true"] { outline: 2px solid var(--accent); outline-offset: -1px; }
+.j-top { display: flex; align-items: baseline; gap: 8px; }
+.j-n { font-family: var(--mono); font-size: 13.5px; color: var(--faint); }
+.j-title { font-weight: 700; font-size: 16.5px; line-height: 1.3; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.j-kind { color: var(--muted); font-size: 14px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.segs { display: flex; gap: 3px; }
+.segs span { flex: 1; height: 9px; border-radius: 5px; background: var(--line); }
+.segs .done { background: var(--ok); } .segs .stop { background: var(--cnc); } .segs .none { background: var(--miss); }
+.segs .active { background: var(--accent); animation: pulse 1.1s ease-in-out infinite; }
+.j-now { font-size: 14.5px; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-height: 2.9em; }
+.j-now b { color: var(--text); }
+.j-foot { display: flex; gap: 6px 8px; align-items: center; flex-wrap: wrap; font-size: 13.5px; color: var(--faint); }
+.j-foot .sp { flex: 1; }
+
+.detail { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.d-head { padding: 18px 20px; display: grid; gap: 10px; }
+.d-title { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.d-title h2 { font-size: 24px; }
+.d-title .sp { flex: 1; }
+.d-meta { color: var(--muted); font-size: 15px; }
+.d-now { font-size: 16.5px; padding: 10px 14px; border-radius: 10px; background: var(--accent-soft); }
+.d-now.done { background: var(--panel-2); }
+.d-tags { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.d-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; }
+.d-steps { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; min-width: 0; }
+.stages { display: grid; grid-template-columns: repeat(auto-fit, minmax(128px, 1fr)); gap: 7px; padding: 14px 18px 6px; }
+.stage { border: 1px solid var(--line); border-radius: 10px; padding: 9px 11px; background: var(--panel-2); min-width: 0; }
+.stage .n { font-size: 12px; color: var(--faint); font-weight: 700; }
+.stage .l { font-weight: 700; font-size: 14.5px; line-height: 1.25; margin: 1px 0; overflow-wrap: anywhere; }
+.stage .s { font-size: 13.5px; color: var(--muted); line-height: 1.3; overflow-wrap: anywhere; }
 .stage.done { border-color: var(--ok); background: var(--ok-soft); } .stage.done .s { color: var(--ok); }
 .stage.stop { border-color: var(--cnc); background: var(--cnc-soft); } .stage.stop .s { color: var(--cnc); }
 .stage.none { border-color: var(--miss); background: var(--miss-soft); } .stage.none .s { color: var(--miss); }
-
-.feed { list-style: none; margin: 0; padding: 8px 16px 14px; }
-.feed li { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 12px; padding: 9px 0; border-top: 1px solid var(--line-2);
-  animation: in .25s ease-out; }
+.stage.active { box-shadow: 0 0 0 2px var(--accent); }
+.feed { list-style: none; margin: 0; padding: 8px 18px 14px; counter-reset: step; }
+.feed li { display: grid; grid-template-columns: 38px minmax(0, 1fr); gap: 12px; padding: 12px 0; border-top: 1px solid var(--line-2);
+  animation: in .25s ease-out; counter-increment: step; }
 .feed li:first-child { border-top: 0; }
+.feed li::before { content: counter(step); width: 32px; height: 32px; border-radius: 50%; background: var(--panel-2); border: 1px solid var(--line);
+  display: grid; place-items: center; font-weight: 700; font-size: 14px; color: var(--muted); }
+.feed li.stop::before { border-color: var(--cnc); color: var(--cnc); background: var(--cnc-soft); }
+.feed li.none::before { border-color: var(--miss); color: var(--miss); background: var(--miss-soft); }
 @keyframes in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
-@media (prefers-reduced-motion: reduce) { .feed li { animation: none; } }
-.who { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); padding-top: 2px; }
-.what b { font-weight: 600; }
+@media (prefers-reduced-motion: reduce) { .feed li, .chip.run::before, .segs .active { animation: none; } }
+.who { font-size: 12.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); font-weight: 700; }
+.what { font-size: 16px; }
+.what b { font-weight: 650; }
 .what .d, td .d { color: var(--muted); }
-td .d { font-size: 12px; }
-code, .spl { font-family: var(--mono); font-size: 12.5px; }
-code { background: var(--code-bg); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+td .d { font-size: 14px; }
+code, .spl { font-family: var(--mono); font-size: 13.5px; }
+code { background: var(--code-bg); padding: 1px 6px; border-radius: 5px; overflow-wrap: anywhere; }
 .spl { background: var(--code-bg); border: 1px solid var(--line-2); border-radius: 8px; padding: 9px 11px; margin: 7px 0 4px;
   white-space: pre-wrap; overflow-wrap: anywhere; }
 .spl .pipe { color: var(--faint); }
-.tag { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 5px; margin-right: 6px;
+.tag { display: inline-block; font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 5px; margin-right: 6px;
   text-transform: uppercase; letter-spacing: .04em; }
 .tag.narrow { background: color-mix(in srgb, var(--narrow) 16%, transparent); color: var(--narrow); }
 .tag.wide { background: color-mix(in srgb, var(--wide) 16%, transparent); color: var(--wide); }
-.kv { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 6px; }
-.kv span { background: var(--code-bg); border-radius: 5px; padding: 1px 7px; font-family: var(--mono); font-size: 12px;
-  overflow-wrap: anywhere; }
+.kv { display: flex; flex-wrap: wrap; gap: 5px 6px; margin-top: 7px; }
+.kv span { background: var(--code-bg); border-radius: 6px; padding: 2px 8px; font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
 .kv span i { font-style: normal; color: var(--faint); }
 .kv span.hit { outline: 1.5px solid var(--ok); }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; }
-.fact { border: 1px solid var(--line-2); border-radius: 10px; padding: 10px 12px; background: var(--panel-2); min-width: 0; }
-.fact .k { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); }
-.fact .v { font-weight: 600; margin-top: 2px; overflow-wrap: anywhere; }
-.fact .x { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
-.dots { display: flex; gap: 5px; align-items: center; margin-top: 5px; flex-wrap: wrap; }
-.dot { width: 22px; height: 8px; border-radius: 4px; }
-.dot.narrow { background: var(--narrow); } .dot.wide { background: var(--wide); }
-.tbl-wrap { overflow-x: auto; }
-table { border-collapse: collapse; width: 100%; font-size: 13px; }
-th, td { text-align: left; padding: 6px 10px; border-top: 1px solid var(--line-2); vertical-align: top; }
-th { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 600; border-top: 0; }
-td.mono { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
-.check { display: flex; gap: 10px; align-items: baseline; padding: 10px 16px; border-top: 1px solid var(--line-2); font-size: 13px; }
-.check.ok b { color: var(--ok); } .check.no b { color: var(--miss); }
-details.log { margin-top: 4px; }
-details.log summary { cursor: pointer; color: var(--muted); padding: 6px 2px; }
-details.log pre { background: var(--code-bg); border: 1px solid var(--line-2); border-radius: 8px; padding: 12px; margin: 6px 0 0;
-  max-height: 420px; overflow: auto; font: 12px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
-.note { color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+.console { background: var(--con-bg); color: var(--con-text); border-radius: 14px; border: 1px solid var(--con-line); overflow: hidden; min-width: 0; }
+.console > header { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--con-line); }
+.console > header h3 { font-size: 15px; color: #fff; }
+.console > header .sp { flex: 1; }
+.console .seg { border-color: #2a323f; background: transparent; }
+.console .seg button { color: var(--con-dim); border-color: #2a323f; padding: 4px 11px; font-size: 13.5px; }
+.console .seg button[aria-pressed="true"] { background: #1c2533; color: #fff; }
+.lines { font: 13.5px/1.55 var(--mono); padding: 10px 14px; height: 230px; overflow-y: auto; }
+.ln { display: grid; grid-template-columns: 62px 132px minmax(0, 1fr); gap: 10px; }
+.ln .lt { color: var(--con-dim); text-align: right; }
+.ln .ls { color: #8fb4ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ln.stop .ls { color: #f2c35c; } .ln.none .ls { color: #ff8d83; } .ln.good .ls { color: #62d49b; }
+.ln .lm { white-space: pre-wrap; overflow-wrap: anywhere; }
+.raw { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
-@media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; min-height: 0; }
-  .side { position: static; max-height: 260px; border-right: 0; border-bottom: 1px solid var(--line); }
-  .stages { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .brand span { display: none; }
-  .top { position: static; flex-wrap: wrap; gap: 8px 10px; padding: 10px 14px; }
-  .brand { flex: 1 0 100%; }
-  .mock { margin-left: 0; white-space: normal; flex: 1 1 auto; }
-  main { padding: 16px 14px 50px; }
-  .feed li { grid-template-columns: 1fr; gap: 2px; }
-  .head { flex-wrap: wrap; } .head .btn { margin-left: 0; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.fact { border: 1px solid var(--line-2); border-radius: 12px; padding: 12px 14px; background: var(--panel-2); min-width: 0; }
+.fact .k { font-size: 12.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); font-weight: 700; }
+.fact .v { font-weight: 700; font-size: 18px; margin-top: 3px; overflow-wrap: anywhere; }
+.fact .x { color: var(--muted); font-size: 14.5px; overflow-wrap: anywhere; }
+.fact.big .v { font-size: 30px; letter-spacing: -0.02em; }
+.dots { display: flex; gap: 5px; align-items: center; margin-top: 5px; flex-wrap: wrap; }
+.dot { width: 24px; height: 9px; border-radius: 5px; }
+.dot.narrow { background: var(--narrow); } .dot.wide { background: var(--wide); }
+.bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--line); min-width: 120px; }
+.bar span { display: block; }
+.bar .det { background: var(--ok); } .bar .prv { background: var(--prev); } .bar .mis { background: var(--miss); } .bar .cnc { background: var(--cnc); }
+.tbl-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 15px; }
+th, td { text-align: left; padding: 9px 12px; border-top: 1px solid var(--line-2); vertical-align: top; }
+th { font-size: 12.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--faint); font-weight: 700; border-top: 0; white-space: nowrap; }
+td.mono { font-family: var(--mono); font-size: 13.5px; white-space: nowrap; }
+.check { display: flex; gap: 10px; align-items: baseline; padding: 14px 18px; font-size: 16px; flex-wrap: wrap; }
+.check.ok b { color: var(--ok); } .check.no b { color: var(--miss); }
+
+.console { order: -1; }
+@media (min-width: 1700px) {
+  .d-body { grid-template-columns: minmax(0, 1.5fr) minmax(400px, 1fr); }
+  .console { order: 0; position: sticky; top: calc(var(--top) + 14px); }
+  .lines { height: min(64vh, 660px); }
+  .ln { grid-template-columns: 62px minmax(0, 1fr); margin-bottom: 7px; }
+  .ln .lt { text-align: left; }
+  .ln .lm { grid-column: 1 / -1; }
+}
+@media (max-width: 1100px) {
+  .work { grid-template-columns: 1fr; }
+  .jobs { position: static; max-height: 430px; }
+}
+@media (max-width: 760px) {
+  .top { height: auto; flex-wrap: wrap; gap: 6px 12px; padding: 10px 16px 0; position: static; }
+  .tabs { order: 3; flex-basis: 100%; }
+  #theme { margin-left: auto; order: 1; }
+  .mock { order: 2; margin-left: 0; flex-basis: 100%; text-align: center; }
+  .tray input[type="text"] { width: 150px; }
+  .tab { padding: 8px 12px; }
+  .mock { font-size: 13px; white-space: normal; }
+  main { padding: 18px 16px 110px; }
+  .page-head h1 { font-size: 26px; }
+  .lib-grid { grid-template-columns: 1fr; }
+  .facts > div { grid-template-columns: 1fr; gap: 0; }
+  .frow .label { min-width: 0; flex-basis: 100%; }
+  .ln { grid-template-columns: 54px minmax(0, 1fr); }
+  .ln .ls { display: none; }
+  .crow { grid-template-columns: minmax(0, 1fr) auto; }
+  .crow .chip { display: none; }
 }
 </style>
 </head>
 <body>
-<div class="top">
-  <div class="brand"><h1>Detection Validation Sandbox</h1><span>every ant, step by step</span></div>
-  <div class="mock" title="Every run uses the mock Splunk and mock OpenAEV from the test harness">Mock sandbox: no real Splunk, no real hosts</div>
-  <button class="btn" id="runAll">Run all tests</button>
-</div>
-<div class="layout">
-  <nav class="side" id="side" aria-label="Test catalogue"></nav>
-  <main id="main"><div class="empty">Loading the catalogue…</div></main>
+<header class="top">
+  <div class="brand"><span class="mark" aria-hidden="true"></span><b>Detection Validation</b></div>
+  <nav class="tabs" role="tablist" aria-label="Views">
+    <button class="tab" role="tab" id="tab-library" aria-selected="true" aria-controls="view-library">Attack library</button>
+    <button class="tab" role="tab" id="tab-sandbox" aria-selected="false" aria-controls="view-sandbox">Sandbox <span class="badge" id="tabBadge" hidden></span></button>
+  </nav>
+  <div class="mock" title="Every job uses mock Splunk, mock Falcon, mock OpenCTI and mock OpenAEV">Mock sandbox: no real Splunk, Falcon or hosts</div>
+  <button class="btn small" id="theme" aria-label="Switch between light and dark">Dark</button>
+</header>
+
+<main>
+  <section id="view-library" role="tabpanel" aria-labelledby="tab-library">
+    <div class="page-head">
+      <h1>Attack library</h1>
+      <p id="libIntro">Loading the library…</p>
+    </div>
+    <div class="stats" id="libStats"></div>
+    <div class="card filters">
+      <input class="search" id="libSearch" type="search" placeholder="Search by name, technique id or command" aria-label="Search the attack library">
+      <div class="frow"><span class="label">Attack type</span><span id="tacticChips" class="frow"></span></div>
+      <div class="frow" id="libSegs"></div>
+      <details class="legend"><summary>What the attack types mean</summary><div class="lg" id="legend"></div></details>
+    </div>
+    <div class="lib-meta" id="libMeta"></div>
+    <div class="lib-grid" id="libGrid"></div>
+  </section>
+
+  <section id="view-sandbox" role="tabpanel" aria-labelledby="tab-sandbox" hidden>
+    <div class="page-head">
+      <h1>Sandbox</h1>
+      <p id="sbIntro">Each job is the real ant and collector code in its own process, against its own mock Splunk, Falcon, OpenCTI and OpenAEV.</p>
+    </div>
+    <div class="launch" id="launch"></div>
+    <details class="card checks" id="checks">
+      <summary><span id="checksTitle">All checks</span><span class="sub">every guard and edge case, each one compared with its expected result</span><span class="sp"></span>
+        <button class="btn small" id="runAll">Run all checks</button></summary>
+      <div class="inner">
+        <input class="search" id="checkSearch" type="search" placeholder="Search the checks" aria-label="Search the checks">
+        <div class="frow" id="checkGroups"></div>
+        <div class="checklist" id="checkList"></div>
+      </div>
+    </details>
+    <div class="card strip" id="strip"></div>
+    <div class="work">
+      <div class="jobs" id="jobs" aria-label="Jobs"></div>
+      <div class="detail" id="detail"></div>
+    </div>
+  </section>
+</main>
+
+<div class="tray" id="tray" hidden>
+  <b id="trayCount"></b><span class="sws" id="traySw"></span>
+  <label class="fgroup"><span class="label">Name</span><input type="text" id="trayName" maxlength="48" placeholder="Library selection"></label>
+  <span class="fgroup"><span class="label">Hosts</span><span id="trayHosts" class="frow"></span></span>
+  <span class="actions"><button class="btn link" id="trayClear">Clear</button>
+  <button class="btn primary" id="trayRun">Build and run in the sandbox</button></span>
+  <span class="err" id="trayErr" hidden></span>
 </div>
 
 <script>
@@ -172,10 +394,49 @@ function el(tag, attrs, ...kids) {
     node.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
   return node;
 }
+const put = (node, ...kids) => node.replaceChildren(...kids.flat(Infinity).filter((k) => k !== null && k !== undefined && k !== false));
 const code = (t) => el("code", { text: t });
 const b = (t) => el("b", { text: t });
 const plural = (n, word) => `${n} ${word}${n === 1 ? "" : (word.endsWith("ch") ? "es" : "s")}`;
+const pct = (x) => x === null || x === undefined ? "not scored" : Math.round(x * 100) + "%";
+async function postJSON(url, body) {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || "the request failed");
+  return data;
+}
+const store = { get(k) { try { return localStorage.getItem(k); } catch { return null; } }, set(k, v) { try { localStorage.setItem(k, v); } catch { /* fine without */ } } };
 
+/* ATT&CK tactics: the attack types. One colour each, used for filters, cards and tags. */
+const TACTICS = {
+  "reconnaissance": ["Reconnaissance", "#0ea5e9", "Gathering information about the target before an attack."],
+  "resource-development": ["Resource development", "#84cc16", "Setting up servers, accounts or tools to attack with."],
+  "initial-access": ["Initial access", "#06b6d4", "Getting into the network for the first time."],
+  "execution": ["Execution", "#8b5cf6", "Running the attacker's commands or code on a machine."],
+  "persistence": ["Persistence", "#d946ef", "Keeping a foothold so access survives a restart."],
+  "privilege-escalation": ["Privilege escalation", "#f43f5e", "Gaining higher permissions on a machine."],
+  "defense-evasion": ["Defence evasion", "#94a3b8", "Hiding, or switching defences off."],
+  "credential-access": ["Credential access", "#eab308", "Stealing passwords and other sign-in secrets."],
+  "discovery": ["Discovery", "#14b8a6", "Looking around the machine and the network."],
+  "lateral-movement": ["Lateral movement", "#f97316", "Moving from one machine to another."],
+  "collection": ["Collection", "#a3a635", "Gathering the data the attacker came for."],
+  "command-and-control": ["Command and control", "#ec4899", "Talking to the attacker's server and pulling tools in."],
+  "exfiltration": ["Exfiltration", "#78716c", "Taking data out of the network."],
+  "impact": ["Impact", "#b45309", "Destroying, encrypting or disrupting systems and data."],
+};
+const tacticOf = (slug) => TACTICS[slug] || [slug ? slug.replaceAll("-", " ") : "Other", "#94a3b8", ""];
+function tacticTag(slug) {
+  const [label, color, hint] = tacticOf(slug);
+  return el("span", { class: "tactic", style: `--tc:${color}`, title: hint }, el("i"), label);
+}
+function swatches(tactics) {
+  return el("span", { class: "sws" }, [...new Set(tactics)].map((t) => {
+    const [label, color] = tacticOf(t);
+    return el("span", { class: "sw", style: `--tc:${color}`, title: label });
+  }));
+}
+
+const OUTCOMES = ["Detected", "Prevented", "Missed", "Could not check"];
 const OUTCOME_CLASS = { "Detected": "det", "Prevented": "prv", "Missed": "mis", "Could not check": "cnc" };
 const REASONS = {
   marker_absent: "alerts came back, but none carries this step's marker",
@@ -183,57 +444,169 @@ const REASONS = {
   outside_time_window: "the marker was found, but outside the step's time window",
   no_alerts: "the search returned nothing",
   no_matching_alert: "alerts came back, but none matches this step",
-  auth_failed: "Splunk rejected the sign-in",
-  source_unreachable: "Splunk could not be reached",
+  auth_failed: "the sign-in was rejected",
+  source_unreachable: "the source could not be reached",
   data_source_missing: "the index does not exist or cannot be read",
-  search_failed: "Splunk reported that the search failed",
+  search_failed: "the source reported that the search failed",
   query_refused: "the query was refused before anything was sent",
   expectation_not_supported: "Splunk only detects; it cannot judge a prevention",
   collector_error: "the collector hit an internal error",
 };
 const TEMPLATE = { narrow: "narrow_location_search", wide: "wide_step_search" };
-const state = { groups: [], last: {}, selected: null, runs: {}, busy: false };
-const allTests = () => state.groups.flatMap((g) => g.tests);
-const testById = (id) => allTests().find((t) => t.id === id);
+const FEATURED = [
+  ["threat_scenario", "Scenario from OpenCTI", "A threat report comes in from the mock OpenCTI. The ants build the tests, a person approves them, and the scenario runs."],
+  ["full_run", "All ants, one run", "The four base tests through every ant: plan, gate, run, observe, match, report."],
+  ["playground", "Blind playground", "Random steps, hidden defences and decoy alerts. A referee checks every call the ants make."],
+  ["detection_loop", "From Missed to Detected", "A missed step gets a tested detection proposal. A person approves and deploys it, and the re-run catches the step."],
+];
 
-/* ---------- catalogue ---------- */
-function chipFor(last) {
-  if (!last) return el("span", { class: "chip neu", text: "Not run" });
-  if (!last.ok) return el("span", { class: "chip bad", text: "Check failed" });
-  const outcome = last.outcomes[last.outcomes.length - 1];
-  if (last.pipeline) return el("span", { class: "chip det", text: "Passed" });
-  if (!outcome) return el("span", { class: "chip neu", text: "Checked" });
-  return el("span", { class: "chip " + OUTCOME_CLASS[outcome], text: outcome });
+const S = {
+  groups: [], slots: 4, lib: { tactics: [], attacks: [], not_simulated: [], hosts: [] }, tech: {}, last: {},
+  view: "library", f: { q: "", tactics: new Set(), watch: "any", team: "any", show: "all", result: "any" },
+  picked: new Set(), hosts: new Set(),
+  jobs: new Map(), selected: null, speed: store.get("oaev-speed") === "fast" ? "fast" : "reading",
+  checkQ: "", checkGroup: "all", booted: false, sig: "",
+};
+const allTests = () => S.groups.flatMap((g) => g.tests);
+
+/* ====================================================================== attack library */
+function libraryItems() {
+  return [...S.lib.attacks.map((a) => ({ ...a, runnable: true })), ...S.lib.not_simulated.map((r) => ({ ...r, runnable: false }))];
 }
-function renderSide() {
-  const side = $("side");
-  side.replaceChildren();
-  for (const group of state.groups) {
-    side.append(el("h2", { text: group.group }));
-    for (const test of group.tests) {
-      side.append(el("button", {
-        class: "test", "aria-current": state.selected === test.id ? "true" : null, title: test.blurb,
-        onclick: () => select(test.id),
-      }, el("span", { class: "t", text: test.title }), chipFor(state.last[test.id])));
-    }
+function matches(item) {
+  const f = S.f;
+  if (f.tactics.size && !f.tactics.has(item.tactic)) return false;
+  if (f.show === "run" && !item.runnable) return false;
+  if (f.show === "refused" && item.runnable) return false;
+  if (f.watch !== "any" && !(item.runnable && item.expect[f.watch])) return false;
+  if (f.team !== "any" && !(item.runnable && item.category === f.team)) return false;
+  if (f.result !== "any") {
+    const last = S.last[item.technique];
+    if (!(last ? last.outcomes : ["none"]).includes(f.result)) return false;
   }
+  if (f.q) {
+    const hay = [item.technique, item.name, item.description, item.why, item.command, tacticOf(item.tactic)[0]].join(" ").toLowerCase();
+    if (!f.q.toLowerCase().split(/\s+/).filter(Boolean).every((w) => hay.includes(w))) return false;
+  }
+  return true;
 }
-function select(id) {
-  state.selected = id;
-  renderSide();
-  renderMain(false);
+function seg(label, options, current, pick) {
+  return el("span", { class: "fgroup" }, el("span", { class: "label", text: label }),
+    el("span", { class: "seg", role: "group", "aria-label": label }, options.map(([value, text]) =>
+      el("button", { "aria-pressed": String(current === value), onclick: () => pick(value), text }))));
+}
+function attackCard(item) {
+  const [, color] = tacticOf(item.tactic);
+  const picked = S.picked.has(item.technique);
+  const last = S.last[item.technique];
+  const fact = (k, v) => el("div", {}, el("dt", { text: k }), el("dd", {}, v));
+  const card = el("article", { class: "attack" + (picked ? " sel" : "") + (item.runnable ? "" : " refused"), style: `--tc:${color}` },
+    el("div", { class: "a-top" }, tacticTag(item.tactic), el("span", { class: "tid", text: item.technique }), el("span", { class: "sp" }),
+      !item.runnable ? el("span", { class: "chip cnc", text: "Not simulated" })
+        : last ? last.outcomes.map((o) => el("span", { class: "chip " + OUTCOME_CLASS[o], text: o, title: `Latest result, from job ${last.job}: ${last.title}` }))
+          : el("span", { class: "chip neu", text: "Not run yet" })),
+    el("h3", { text: item.name }));
+  if (!item.runnable) {
+    card.append(el("p", { class: "desc", text: item.why }),
+      el("dl", { class: "facts" }, fact("Why refused", "The ants only run harmless actions. This family has none, so the scenario builder leaves it out and says so in the coverage table.")));
+  } else {
+    const watched = Object.entries(item.expect).map(([src, kind]) => `${src === "falcon" ? "Falcon" : "Splunk"} (${kind})`).join(", ");
+    card.append(el("p", { class: "desc", text: item.description }), el("div", { class: "cmd", text: item.command }),
+      el("dl", { class: "facts" },
+        fact("Watched by", watched || "nothing"),
+        fact("Team", item.category === "network" ? "Network (NetOps)" : "Endpoint (SecOps)"),
+        fact("How real", item.fidelity === "partial" ? "Partial: the same tool, in a read-only way" : "Full: the same command an intruder would run"),
+        fact("Marker", item.agentless ? "None: a plain connection has no place for one, so it matches on addresses and time" : "Carried in the command, so an alert can be tied to this exact step"),
+        fact("In this sandbox", item.sandbox_defence),
+        fact("Detection on file", item.detections.length ? item.detections.map((d) => el("div", { text: d.title }))
+          : (item.no_behaviour || "None in the library yet."))));
+  }
+  card.append(el("button", { class: "btn small pick", "aria-pressed": String(picked),
+    "aria-label": `${picked ? "Remove" : "Add"} ${item.technique} ${item.name} ${picked ? "from" : "to"} the scenario`,
+    onclick: () => { picked ? S.picked.delete(item.technique) : S.picked.add(item.technique); renderLibrary(); },
+    text: picked ? "Added to the scenario" : item.runnable ? "Add to the scenario" : "Add anyway, to see it refused" }));
+  return card;
+}
+function renderLibrary() {
+  const items = libraryItems();
+  const shown = items.filter(matches);
+  const counts = {};
+  for (const it of items) counts[it.tactic] = (counts[it.tactic] || 0) + 1;
+  $("tacticChips").replaceChildren(...S.lib.tactics.map((t) => {
+    const [label, color, hint] = tacticOf(t), on = S.f.tactics.has(t);
+    return el("button", { class: "fchip", style: `--tc:${color}`, "aria-pressed": String(on), title: hint,
+      onclick: () => { on ? S.f.tactics.delete(t) : S.f.tactics.add(t); renderLibrary(); } },
+      el("i"), label, el("span", { class: "n", text: counts[t] || 0 }));
+  }), ...(S.f.tactics.size ? [el("button", { class: "btn link", text: "Show all types", onclick: () => { S.f.tactics.clear(); renderLibrary(); } })] : []));
+  const set = (key) => (value) => { S.f[key] = value; renderLibrary(); };
+  $("libSegs").replaceChildren(
+    seg("Show", [["all", "All"], ["run", "Can run"], ["refused", "Refused"]], S.f.show, set("show")),
+    seg("Watched by", [["any", "Any"], ["falcon", "Falcon"], ["splunk", "Splunk"]], S.f.watch, set("watch")),
+    seg("Team", [["any", "Any"], ["endpoint", "Endpoint"], ["network", "Network"]], S.f.team, set("team")),
+    seg("Latest result", [["any", "Any"], ["Detected", "Detected"], ["Prevented", "Prevented"], ["Missed", "Missed"], ["none", "Not run yet"]], S.f.result, set("result")));
+  const tried = S.lib.attacks.filter((a) => S.last[a.technique]);
+  const tally = {};
+  for (const a of tried) for (const o of S.last[a.technique].outcomes) tally[o] = (tally[o] || 0) + 1;
+  const stat = (k, v, x) => el("div", { class: "stat" }, el("div", { class: "label", text: k }), el("div", { class: "v" }, v), el("div", { class: "x" }, x));
+  $("libStats").replaceChildren(
+    stat("Attack types that can run", S.lib.attacks.length, "each one a harmless, reviewed action"),
+    stat("Refused families", S.lib.not_simulated.length, "cannot be done harmlessly, so never run"),
+    stat("With a detection on file", S.lib.attacks.filter((a) => a.detections.length).length, "the detection engineer can propose it after a miss"),
+    stat("Tried in this session", `${tried.length} of ${S.lib.attacks.length}`,
+      tried.length ? OUTCOMES.filter((o) => tally[o]).map((o) => el("span", { class: "chip " + OUTCOME_CLASS[o], text: `${tally[o]} ${o}`, style: "margin:4px 4px 0 0" }))
+        : "run a scenario to fill this in"));
+  const shownKeys = shown.map((i) => i.technique);
+  const allPicked = shownKeys.length && shownKeys.every((k) => S.picked.has(k));
+  put($("libMeta"), el("span", {}, `Showing ${shown.length} of ${items.length}`),
+    shown.length ? el("button", { class: "btn link", text: allPicked ? "Remove the shown ones from the scenario" : "Add all shown to the scenario",
+      onclick: () => { for (const k of shownKeys) allPicked ? S.picked.delete(k) : S.picked.add(k); renderLibrary(); } }) : null);
+  $("libGrid").replaceChildren(...(shown.length ? shown.map(attackCard)
+    : [el("div", { class: "card empty", text: "No attack type matches these filters." })]));
+  renderTray();
+}
+function renderTray() {
+  const picked = libraryItems().filter((i) => S.picked.has(i.technique));
+  $("tray").hidden = !(picked.length && S.view === "library");
+  $("trayCount").textContent = `${plural(picked.length, "attack type")} in the scenario`;
+  $("traySw").replaceChildren(swatches(picked.map((i) => i.tactic)));
+  $("trayHosts").replaceChildren(...S.lib.hosts.map((h) => el("button", { class: "fchip", style: "--tc:var(--accent)",
+    "aria-pressed": String(S.hosts.has(h)), text: h,
+    onclick: () => { S.hosts.has(h) ? S.hosts.delete(h) : S.hosts.add(h); renderTray(); } })));
+  $("trayRun").disabled = !S.hosts.size;
+}
+async function runSelection() {
+  $("trayErr").hidden = true;
+  try {
+    const data = await postJSON("/api/jobs", { custom: { name: $("trayName").value, techniques: [...S.picked], hosts: [...S.hosts] } });
+    adoptJobs(data.jobs, true);
+    showView("sandbox");
+  } catch (err) { $("trayErr").textContent = "Could not start the job: " + err.message + "."; $("trayErr").hidden = false; }
 }
 
-/* ---------- reading a run ---------- */
-function cyclesOf(events) {
-  const cycles = [];
-  let cur = null;
-  for (const e of events) {
-    if (e.type === "cycle_start") { cur = { start: e, items: [], end: null }; cycles.push(cur); }
-    else if (e.type === "cycle_end" && cur) { cur.end = e; cur = null; }
-    else if (cur) cur.items.push(e);
-  }
-  return cycles;
+/* ====================================================================== reading a job */
+const DELAY = { ant: 430, run_start: 260, run_end: 320, cycle_start: 320, index_check: 280, search: 430, rows: 340, cycle_end: 320,
+  validator: 300, template: 300, harness: 120 };
+const ANTS = ["Library", "Intel", "Scenario builder", "Planner", "Gatekeeper", "Agent", "Splunk observer", "Falcon observer", "Analyst", "Matcher", "Detection engineer", "Reporter", "Referee"];
+const OPTIONAL_ANTS = ["Library", "Intel", "Scenario builder", "Detection engineer", "Referee"];
+const PROPOSAL_CLASS = { "ready for review": "det", "too noisy": "cnc", "does not catch": "mis", "deployed, but did not fire": "bad" };
+const COVERAGE_CLASS = { simulated: "det", partial: "prv", "not simulated": "cnc", "no action": "mis" };
+const STAGE_OF = { Step: 1, Memory: 1, "Query writer": 2, Validator: 3, Splunk: 4, Collector: 4, Matcher: 5, Outcome: 6, Evidence: 6 };
+
+function phase(j) {
+  if (j.s.status === "queued") return "waiting";
+  if (j.s.status === "running") return "running";
+  if (j.shown < j.events.length) return "showing";
+  return j.s.ok ? "ok" : "bad";
+}
+function phaseChip(j) {
+  const p = phase(j);
+  const [text, cls] = { waiting: ["Waiting", "neu"], running: ["Running", "run"], showing: ["Showing steps", "run"],
+    ok: [j.s.kind === "custom" ? "Finished" : "Passed", "det"], bad: ["Failed", "bad"] }[p];
+  return el("span", { class: "chip " + cls, text });
+}
+function textOf(parts) {
+  return [parts].flat(Infinity).map((p) => p === null || p === undefined || p === false ? "" : p.nodeType ? p.textContent : String(p))
+    .join("").replace(/\s+/g, " ").trim();
 }
 function splBlock(spl) {
   const box = el("div", { class: "spl" });
@@ -249,9 +622,7 @@ function splBlock(spl) {
   box.title = spl;
   return box;
 }
-function commandsOf(spl) {
-  return spl.split(" | ").slice(1).map((p) => p.trim().split(" ")[0]).join(", ") || "none";
-}
+const commandsOf = (spl) => spl.split(" | ").slice(1).map((p) => p.trim().split(" ")[0]).join(", ") || "none";
 function rowView(row, markers) {
   const keys = ["_time", "index", "sourcetype", "dest_host", "src_ip", "dst_ip", "process", "file_name", "query",
     "parent_process_name", "url_path", "event.CompositeId", "rule_name", "signature"];
@@ -260,8 +631,7 @@ function rowView(row, markers) {
     if (row[key] === undefined || row[key] === null || row[key] === "") continue;
     const value = String(row[key]);
     const hit = markers.some((m) => value.toLowerCase().includes(m));
-    box.append(el("span", { class: hit ? "hit" : null, title: hit ? "carries the step marker" : null },
-      el("i", { text: key + " " }), value));
+    box.append(el("span", { class: hit ? "hit" : null, title: hit ? "carries the step marker" : null }, el("i", { text: key + " " }), value));
   }
   return box;
 }
@@ -277,13 +647,12 @@ function memoryChange(before, after) {
   if (!was.length) return `Learned where to look next time: ${now.join(", ")}.`;
   if (!now.length) return "The remembered place was dropped: the detection is not there any more.";
   const added = now.filter((x) => !was.includes(x)), kept = now.filter((x) => was.includes(x));
-  if (added.length) return `New place added: ${added.join(", ")}.` +
-    (kept.length ? ` Still remembered until it expires: ${kept.join(", ")}.` : "");
+  if (added.length) return `New place added: ${added.join(", ")}.` + (kept.length ? ` Still remembered until it expires: ${kept.join(", ")}.` : "");
   if (a[0].proven_at !== z[0].proven_at) return `Same place (${now.join(", ")}), proven again today.`;
   return `Unchanged (${now.join(", ")}).`;
 }
 
-/* Build the list of feed items and the stage states for one cycle. */
+/* One collector cycle: the list of steps to show and the state of its six stages. Works on a cycle that is still running. */
 function describeCycle(cycle) {
   const items = [];
   const steps = cycle.start.steps;
@@ -292,37 +661,29 @@ function describeCycle(cycle) {
   for (const s of steps) {
     const where = s.host || s.target_ip || "unknown host";
     say("Step", b(`${s.kind === "PREVENTION" ? "Prevention" : "Detection"} step fired on ${where}`),
-      el("div", { class: "d" }, s.has_marker ? ["Marker: ", code(s.inject)]
-        : ["No marker (network step). IPs: ", code(`${s.source_ip} → ${s.target_ip}`)]));
+      el("div", { class: "d" }, s.has_marker ? ["Marker: ", code(s.inject)] : ["No marker (network step). IPs: ", code(`${s.source_ip} → ${s.target_ip}`)]));
   }
   const before = memoryPlaces(cycle.start.memory);
   say("Memory", before.length
-    ? ["Remembered from an earlier run: ",
-      ...[...new Set(before.map((p) => `${p.index} / ${p.sourcetype}`))].flatMap((t) => [code(t), " "])]
+    ? ["Remembered from an earlier run: ", ...[...new Set(before.map((p) => `${p.index} / ${p.sourcetype}`))].flatMap((t) => [code(t), " "])]
     : "Nothing remembered for this test yet.");
-
   const end = cycle.end || { results: [], searches: [], traces: [], deferred: 0, memory: cycle.start.memory };
   let sent = 0, failure = null;
   for (const e of cycle.items) {
     if (e.type === "index_check") {
       say("Splunk", e.ok ? ["Index check: ", code(e.index), " exists."] : [b("Index check failed: "), code(e.index), " was not found."]);
       if (!e.ok) failure = "index missing";
-    } else if (e.type === "auth_failed") {
-      say("Splunk", b("Sign-in rejected (401).")); failure = "sign-in rejected";
-    } else if (e.type === "search") {
+    } else if (e.type === "auth_failed") { say("Splunk", b("Sign-in rejected (401).")); failure = "sign-in rejected"; }
+    else if (e.type === "search") {
       sent += 1;
-      say("Query writer", el("span", { class: "tag " + e.kind, text: e.kind }),
-        b(`${e.kind === "narrow" ? "Narrow" : "Wide"} search written`), " from template ", code(TEMPLATE[e.kind]), splBlock(e.spl));
-      say("Validator", b("Passed. "), el("span", { class: "d",
-        text: `Names an index, a sourcetype and a time window. Commands used: ${commandsOf(e.spl)}.` }));
+      say("Query writer", el("span", { class: "tag " + e.kind, text: e.kind }), b(`${e.kind === "narrow" ? "Narrow" : "Wide"} search written`),
+        " from template ", code(TEMPLATE[e.kind] || e.kind), splBlock(e.spl));
+      say("Validator", b("Passed. "), el("span", { class: "d", text: `Names an index, a sourcetype and a time window. Commands used: ${commandsOf(e.spl)}.` }));
     } else if (e.type === "rows") {
       say("Splunk", b(`Returned ${plural(e.rows.length, "row")}`), e.rows.length ? "" : el("span", { class: "d", text: " (nothing found there)" }),
         ...e.rows.slice(0, 3).map((r) => rowView(r, markers)));
-    } else if (e.type === "dropped") {
-      say("Splunk", b("The connection dropped during the search.")); failure = "connection dropped";
-    } else if (e.type === "search_error") {
-      say("Splunk", b("Splunk reported an error: "), code(e.message)); failure = "search failed";
-    }
+    } else if (e.type === "dropped") { say("Splunk", b("The connection dropped during the search.")); failure = "connection dropped"; }
+    else if (e.type === "search_error") { say("Splunk", b("Splunk reported an error: "), code(e.message)); failure = "search failed"; }
   }
   if (end.deferred) say("Collector", b(`${plural(end.deferred, "step")} not due yet.`),
     el("span", { class: "d", text: " Its alerts have not had time to arrive, so it is not searched and gets no verdict." }));
@@ -335,9 +696,7 @@ function describeCycle(cycle) {
       say("Matcher", b(`Alert tied to the step${who}. `), r.method === "step_marker"
         ? ["Marker found in field ", code(r.field || "?"), "."] : "Matched on IPs and implant (older matching).",
         r.path ? el("span", { class: "d", text: ` Found by the ${r.path} search.` }) : "");
-    } else if (r.outcome === "Missed") {
-      say("Matcher", b(`No alert could be tied to the step${who}: `), REASONS[r.reason] || r.reason, ".");
-    }
+    } else if (r.outcome === "Missed") say("Matcher", b(`No alert could be tied to the step${who}: `), REASONS[r.reason] || r.reason, ".");
     say("Outcome", el("span", { class: "chip " + OUTCOME_CLASS[r.outcome], text: r.outcome }),
       r.outcome === "Could not check" ? el("span", { class: "d", text: ` ${REASONS[r.reason] || r.reason}.` }) : "",
       el("div", { class: "d" }, r.verdict ? `Written to OpenAEV: ${r.verdict[0]}.`
@@ -345,7 +704,6 @@ function describeCycle(cycle) {
   }
   for (const name of end.traces || []) say("Evidence", "Trace attached: ", code(name));
   if (end.results.length) say("Memory", memoryChange(cycle.start.memory, end.memory));
-
   const outcomes = end.results.map((r) => r.outcome);
   const all = (o) => outcomes.length && outcomes.every((x) => x === o);
   const stages = [
@@ -359,190 +717,159 @@ function describeCycle(cycle) {
     ["Outcome", all("Detected") ? "done" : outcomes.includes("Missed") ? "none" : "stop",
       outcomes.length ? [...new Set(outcomes)].join(", ") : "no verdict yet"],
   ];
-  return { items, stages, end };
+  return { items, stages };
 }
 
-/* ---------- arena ---------- */
-function stageRow(stages, upTo) {
-  return el("div", { class: "stages" }, stages.map(([label, cls, status], i) =>
-    el("div", { class: "stage " + (i < upTo ? cls : "") }, el("div", { class: "n", text: `Stage ${i + 1}` }),
-      el("div", { class: "l", text: label }), el("div", { class: "s", text: i < upTo ? status : "waiting" }))));
-}
-function feedItem(item) {
-  return el("li", {}, el("div", { class: "who", text: item.who }), el("div", { class: "what" }, item.what));
-}
-const STAGE_OF = { Step: 1, Memory: 1, "Query writer": 2, Validator: 3, Splunk: 4, Collector: 4, Matcher: 5, Outcome: 6, Evidence: 6 };
-
-async function playCycle(card, described, animate) {
-  const stagesHost = el("div"), feed = el("ul", { class: "feed" });
-  card.append(stagesHost, feed);
-  let reached = 0;
-  stagesHost.replaceChildren(stageRow(described.stages, animate ? 0 : 6));
-  for (const item of described.items) {
-    feed.append(feedItem(item));
-    if (animate) {
-      reached = Math.max(reached, STAGE_OF[item.who] || reached);
-      stagesHost.replaceChildren(stageRow(described.stages, reached));
-      await new Promise((r) => setTimeout(r, 260));
-    }
-  }
-  stagesHost.replaceChildren(stageRow(described.stages, 6));
-}
-
-function resultsCard(run, cycles) {
-  const facts = el("div", { class: "grid" });
-  const fact = (k, v, x) => facts.append(el("div", { class: "fact" }, el("div", { class: "k", text: k }),
-    el("div", { class: "v" }, v), x ? el("div", { class: "x" }, x) : null));
-  const names = cycles.length > 1 ? ["First run", "Repeat run"] : ["This run"];
-  cycles.forEach((c, i) => {
-    const results = c.end.results;
-    fact(`${names[i] || "Run " + (i + 1)}: outcome`, results.length
-      ? results.map((r) => el("span", { class: "chip " + OUTCOME_CLASS[r.outcome], text: r.outcome, style: "margin-right:4px" }))
-      : "No verdict yet",
-      results[0] && results[0].reason ? (REASONS[results[0].reason] || results[0].reason) : null);
-    const searches = c.end.searches || [];
-    fact(`${names[i] || "Run " + (i + 1)}: searches sent`, plural(searches.length, "search"),
-      searches.length ? el("div", { class: "dots", title: searches.join(", ") },
-        searches.map((k) => el("span", { class: "dot " + k })), searches.join(" + ")) : "none sent");
-  });
-  const lastHit = cycles.flatMap((c) => c.end.results).filter((r) => r.outcome === "Detected").pop();
-  if (lastHit) fact("How it was matched", lastHit.method === "step_marker" ? "Step marker" : "IPs + implant (older matching)",
-    lastHit.field ? ["in field ", code(lastHit.field)] : null);
-  if (cycles.length > 1) {
-    const [a, z] = [cycles[0].end.searches.length, cycles[cycles.length - 1].end.searches.length];
-    fact("Repeat run against first run", `${z} against ${a}`,
-      z < a ? "fewer searches on the repeat run" : z === a ? "same count; the repeat search is narrower" : "more searches on the repeat run");
-  }
-  const decisions = run.events.filter((e) => e.type === "validator" || e.type === "template");
-  if (decisions.length) fact("Decisions", `${decisions.filter((e) => e.refused).length} refused, ` +
-    `${decisions.filter((e) => !e.refused).length} accepted`, "each one is listed above");
-  const card = el("section", { class: "card" }, el("header", {}, el("h3", { text: "Results" }),
-    el("span", { class: "sub", text: `finished in ${run.seconds} s` })), el("div", { class: "body" }, facts));
-
-  const places = memoryPlaces(cycles.length ? cycles[cycles.length - 1].end.memory : {});
-  if (places.length) {
-    card.append(el("div", { class: "body", style: "padding-top:0" }, el("div", { class: "fact" },
-      el("div", { class: "k", text: "Location memory after the run" }),
-      el("div", { class: "tbl-wrap" }, el("table", {}, el("thead", {}, el("tr", {},
-        ["Test", "Index", "Sourcetype", "Field", "Rule", "Delay", "Proven"].map((h) => el("th", { text: h })))),
-        el("tbody", {}, places.map((p) => el("tr", {},
-          el("td", { class: "mono", text: p.key.replace("asset:", "").replace("|expectation:", " · ") }),
-          el("td", { class: "mono", text: p.index }), el("td", { class: "mono", text: p.sourcetype }),
-          el("td", { class: "mono", text: p.field || "–" }), el("td", { text: p.rule_name || "–" }),
-          el("td", { text: p.delay_seconds === null || p.delay_seconds === undefined ? "–" : `${p.delay_seconds} s` }),
-          el("td", { text: p.found_on || "–" })))))))));
-  }
-  card.append(el("div", { class: "check " + (run.ok ? "ok" : "no") },
-    b(run.ok ? "Check passed." : "Check failed."),
-    el("span", { text: run.ok ? "The harness compared this run with the expected result and they agree."
-      : "The run did not match the expected result: " + (run.fails || []).join("; ") })));
-  return card;
-}
-
-function listCard(title, rows) {
-  return el("section", { class: "card" }, el("header", {}, el("h3", { text: title })),
-    el("div", { class: "body tbl-wrap" }, el("table", {}, el("thead", {}, el("tr", {},
-      ["Case", "Decision", "Why"].map((h) => el("th", { text: h })))),
-      el("tbody", {}, rows.map((e) => el("tr", {}, el("td", {}, e.label, e.spl ? el("div", { class: "spl", text: e.spl }) : null),
-        el("td", {}, el("span", { class: "chip " + (e.refused ? "mis" : "det"), text: e.refused ? "Refused" : "Accepted" })),
-        el("td", { text: e.message || "Allowed commands only; index, sourcetype and time window named." })))))));
-}
-
-async function renderMain(animate) {
-  const main = $("main");
-  const test = testById(state.selected);
-  if (!test) return;
-  const run = state.runs[test.id];
-  const runButton = el("button", { class: "btn primary", disabled: state.busy || null, onclick: () => runTest(test.id),
-    text: state.busy ? "Running…" : run ? "Run again" : "Run test" });
-  main.replaceChildren(el("div", { class: "head" }, el("div", {}, el("h2", { text: test.title }), el("p", { text: test.blurb })), runButton));
-  if (!run) {
-    main.append(el("section", { class: "card" }, el("div", { class: "empty" },
-      state.busy ? "Running the real collector code against the mock Splunk…"
-        : "Run the test to watch the collector work through it: step fired, search written, validator, search sent, alert matched, outcome.")));
-    return;
-  }
-  if (run.error) { main.append(el("section", { class: "card" }, el("div", { class: "empty", text: run.error }))); return; }
-  if (run.events.some((e) => e.type === "ant")) { await renderPipeline(main, run, animate, test.id); return; }
-  const cycles = cyclesOf(run.events).filter((c) => c.end);
-  const names = cycles.length > 1 ? ["First run", "Repeat run (same test, new run)"] : ["Arena"];
-  const cards = cycles.map((c, i) => {
-    const card = el("section", { class: "card" }, el("header", {}, el("h3", { text: names[i] || `Run ${i + 1}` }),
-      el("span", { class: "sub", text: "real collector code, mock Splunk and mock OpenAEV" })));
-    main.append(card);
-    return [card, describeCycle(c)];
-  });
-  const validator = run.events.filter((e) => e.type === "validator");
-  const templates = run.events.filter((e) => e.type === "template");
-  const tail = () => {
-    if (validator.length) main.append(listCard("Validator decisions", validator));
-    if (templates.length) main.append(listCard("Template store decisions", templates));
-    main.append(resultsCard(run, cycles));
-    main.append(el("details", { class: "log" }, el("summary", { text: "Raw wire log of this run" }), el("pre", { text: run.log })));
-  };
-  if (!animate) { for (const [card, d] of cards) await playCycle(card, d, false); tail(); return; }
-  for (const [card, d] of cards) { await playCycle(card, d, true); if (state.selected !== test.id) return; }
-  tail();
-}
-
-
-/* ---------- full pipeline (all ants) ---------- */
-const ANTS = ["Intel", "Scenario builder", "Planner", "Gatekeeper", "Agent", "Splunk observer", "Falcon observer", "Analyst", "Matcher", "Detection engineer", "Reporter", "Referee"];
-const OPTIONAL_ANTS = ["Intel", "Scenario builder", "Detection engineer", "Referee"];
-const PROPOSAL_CLASS = { "ready for review": "det", "too noisy": "cnc", "does not catch": "mis", "deployed, but did not fire": "bad" };   // only shown when a run starts from OpenCTI
-const COVERAGE_CLASS = { simulated: "det", partial: "prv", "not simulated": "cnc", "no action": "mis" };
-function pipelineRuns(events) {
-  const runs = [];
-  let cur = null;
-  for (const e of events) {
-    if (e.type === "run_start") { cur = { label: e.label, ants: [], end: null }; runs.push(cur); }
-    else if (e.type === "run_end" && cur) { cur.end = e; cur = null; }
-    else if (e.type === "ant") { if (!cur) { cur = { label: "Checks", ants: [], end: null }; runs.push(cur); } cur.ants.push(e); }
-  }
-  return runs;
-}
-function antStages(run, upTo) {
-  const seen = (name) => run.ants.slice(0, upTo).filter((e) => e.ant === name);
-  return el("div", { class: "stages", style: "grid-template-columns: repeat(auto-fit, minmax(104px, 1fr))" },
-    ANTS.filter((name) => !OPTIONAL_ANTS.includes(name) || run.ants.some((e) => e.ant === name)).map((name) => {
-      const mine = seen(name);
-      const bad = mine.find((e) => e.status !== "ok");
-      const cls = !mine.length ? "" : bad ? (bad.status === "none" ? "none" : "stop") : "done";
-      const status = !mine.length ? "waiting" : name === "Gatekeeper" && bad ? "refused something"
-        : name === "Scenario builder" && bad ? "some not testable"
-        : name === "Referee" ? (bad ? "found a wrong call" : "all calls right")
-        : bad ? (bad.status === "none" ? "regression" : "could not check") : "done";
-      return el("div", { class: "stage " + cls }, el("div", { class: "l", text: name }), el("div", { class: "s", text: status }));
-    }));
-}
 function antDetail(e) {
   const out = [];
   if (e.detail) out.push(el("div", { class: "spl", text: e.detail }));
-  if (e.ant === "Intel" && e.data && e.data.techniques) out.push(el("div", { class: "kv" },
-    e.data.techniques.map((t) => el("span", {}, el("i", { text: t.id + " " }), t.name))));
-  if (e.ant === "Scenario builder" && e.data && e.data.coverage) out.push(el("div", { class: "kv" },
-    e.data.coverage.map((c) => el("span", {}, el("i", { text: c.technique + " " }), c.status))));
-  if (e.ant === "Detection engineer" && e.data && e.data.proposals) out.push(el("div", { class: "kv" },
-    e.data.proposals.map((p) => el("span", {}, el("i", { text: p.title + ": " }), p.status))));
-  if (e.ant === "Planner" && Array.isArray(e.data)) out.push(el("div", { class: "kv" },
-    e.data.map((s) => el("span", {}, el("i", { text: s.test + " " }), s.host))));
-  if (e.ant === "Gatekeeper" && Array.isArray(e.data) && e.data.length) out.push(el("div", { class: "kv" },
-    e.data.map((r) => el("span", {}, el("i", { text: `${r.test} on ${r.host}: ` }), r.why))));
-  if (e.ant === "Analyst" && Array.isArray(e.data)) out.push(el("div", { class: "kv" },
-    e.data.map((c) => el("span", {}, el("i", { text: `${c.test_id}: ${c.change}. ` }), c.why))));
-  if (/observer$/.test(e.ant) && Array.isArray(e.data)) out.push(el("div", { class: "kv" }, e.data.map((o) =>
+  const d = e.data;
+  if ((e.ant === "Intel" || e.ant === "Library") && d && d.techniques) out.push(el("div", { class: "d-tags", style: "margin-top:8px" },
+    d.techniques.map((t) => el("span", { class: "tactic", style: `--tc:${tacticOf(t.tactic)[1]}`, title: tacticOf(t.tactic)[0] }, el("i"), `${t.id} ${t.name}`))));
+  if (e.ant === "Scenario builder" && d && d.coverage) out.push(el("div", { class: "kv" },
+    d.coverage.map((c) => el("span", {}, el("i", { text: c.technique + " " }), c.status))));
+  if (e.ant === "Detection engineer" && d && d.proposals) out.push(el("div", { class: "kv" },
+    d.proposals.map((p) => el("span", {}, el("i", { text: p.title + ": " }), p.status))));
+  if (e.ant === "Planner" && Array.isArray(d)) out.push(el("div", { class: "kv" },
+    d.map((s) => el("span", {}, el("i", { text: s.test + " " }), s.host))));
+  if (e.ant === "Gatekeeper" && Array.isArray(d) && d.length) out.push(el("div", { class: "kv" },
+    d.map((r) => el("span", {}, el("i", { text: `${r.test} on ${r.host}: ` }), r.why))));
+  if (e.ant === "Analyst" && Array.isArray(d)) out.push(el("div", { class: "kv" },
+    d.map((c) => el("span", {}, el("i", { text: `${c.test_id}: ${c.change}. ` }), c.why))));
+  if (/observer$/.test(e.ant) && Array.isArray(d)) out.push(el("div", { class: "kv" }, d.map((o) =>
     el("span", {}, el("i", { text: (o.method === "step_marker" ? "marker in " + (o.field || "?") : o.reason ? (REASONS[o.reason] || o.reason) : o.method || "") + " " }),
       o.outcome, o.search_path ? ` (${o.search_path} search)` : ""))));
   return out;
 }
-function scoreCard(end) {
+function antStageData(sec, live) {
+  const names = sec.loose ? [] : ANTS.filter((n) => !OPTIONAL_ANTS.includes(n) || sec.ants.some((e) => e.ant === n));
+  for (const e of sec.ants) if (!names.includes(e.ant)) names.push(e.ant);
+  const lastAnt = sec.ants.length ? sec.ants[sec.ants.length - 1].ant : null;
+  return names.map((name) => {
+    const mine = sec.ants.filter((e) => e.ant === name);
+    const bad = mine.find((e) => e.status !== "ok");
+    const cls = !mine.length ? "" : bad ? (bad.status === "none" ? "none" : "stop") : "done";
+    const status = !mine.length ? (live ? "waiting" : "not needed") : name === "Gatekeeper" && bad ? "refused something"
+      : name === "Scenario builder" && bad ? "some not testable"
+      : name === "Referee" ? (bad ? "found a wrong call" : "all calls right")
+      : bad ? (bad.status === "none" ? "regression" : "could not check") : "done";
+    return { label: name, cls, status, active: live && name === lastAnt };
+  });
+}
+
+/* Everything a job has shown so far, as sections of numbered steps plus what follows them. */
+function buildTimeline(j) {
+  const events = j.events.slice(0, j.shown);
+  const over = j.s.status === "done" && j.shown >= j.events.length;
+  const sections = [], results = [];
+  const decisions = () => {
+    let sec = sections.find((s) => s.decisions);
+    if (!sec) { sec = { label: "Decisions", sub: "each case is put to the real validator or template store", items: [], decisions: true, stages: null }; sections.push(sec); }
+    return sec;
+  };
+  if (j.events.some((e) => e.type === "ant" || e.type === "run_start")) {
+    let cur = null;
+    for (const e of events) {
+      if (e.type === "run_start") {
+        cur = { label: e.label, sub: "every ant runs for real; Splunk, Falcon and the endpoint are mocks", items: [], ants: [], closed: false };
+        sections.push(cur);
+      } else if (e.type === "ant") {
+        if (!cur || cur.closed) { cur = { label: "Checks", sub: "", items: [], ants: [], closed: false, loose: true }; sections.push(cur); }
+        cur.ants.push(e);
+        cur.items.push({ who: e.ant, status: e.status, text: e.title, what: () => [b(e.title), antDetail(e)] });
+      } else if (e.type === "run_end" && cur) {
+        cur.closed = true;
+        const label = cur.label;
+        results.push(() => scoreCard(e, label));
+      } else if (e.type === "harness") results.push(() => verdictCard(j, e));
+    }
+    for (const s of sections) s.stages = antStageData(s, !s.closed && !over);
+  } else {
+    let cur = null, n = 0;
+    const cycles = [];
+    for (const e of events) {
+      if (e.type === "cycle_start") {
+        n += 1; cur = { start: e, items: [], end: null }; cycles.push(cur);
+        sections.push({ label: `Run ${n}`, sub: "real collector code, mock Splunk and mock OpenAEV", cycle: cur });
+      } else if (e.type === "cycle_end" && cur) { cur.end = e; cur = null; }
+      else if (e.type === "validator" || e.type === "template") {
+        decisions().items.push({ who: e.type === "validator" ? "Validator" : "Template store", status: e.refused ? "stop" : "ok",
+          text: `${e.refused ? "Refused" : "Accepted"}: ${e.label}`,
+          what: () => [el("span", { class: "chip " + (e.refused ? "mis" : "det"), text: e.refused ? "Refused" : "Accepted" }), " ", b(e.label),
+            e.spl ? el("div", { class: "spl", text: e.spl }) : null,
+            el("div", { class: "d", text: e.message || "Allowed commands only; index, sourcetype and time window named." })] });
+      } else if (e.type === "harness") results.push(() => resultsCard(j, e, cycles.filter((c) => c.end)));
+      else if (cur) cur.items.push(e);
+    }
+    for (const s of sections) {
+      if (!s.cycle) continue;
+      const d = describeCycle(s.cycle);
+      s.items = d.items.map((it) => ({ who: it.who, status: "ok", text: textOf(it.what), what: () => it.what }));
+      const reached = s.cycle.end ? 6 : Math.max(0, ...d.items.map((it) => STAGE_OF[it.who] || 0));
+      s.stages = d.stages.map(([label, cls, status], i) => ({ label, cls: i < reached ? cls : "", status: i < reached ? status : "waiting",
+        active: !s.cycle.end && !over && i === reached - 1 }));
+    }
+  }
+  const lastSec = sections[sections.length - 1];
+  const lastItem = lastSec && lastSec.items[lastSec.items.length - 1];
+  return { sections, results, steps: sections.reduce((n, s) => n + s.items.length, 0),
+    now: lastItem ? { n: lastSec.items.length, who: lastItem.who, text: lastItem.text, run: sections.length > 1 ? lastSec.label : "" } : null };
+}
+function jobOutcomes(j) {
+  const ends = j.events.filter((e) => e.type === "run_end");
+  const count = {};
+  if (ends.length) Object.assign(count, ends[ends.length - 1].report.totals);
+  else {
+    const cycles = j.events.filter((e) => e.type === "cycle_end");
+    if (cycles.length) for (const r of cycles[cycles.length - 1].results || []) count[r.outcome] = (count[r.outcome] || 0) + 1;
+  }
+  return OUTCOMES.filter((o) => count[o]).map((o) => [o, count[o]]);
+}
+function jobTactics(j) {
+  const techniques = j.s.custom ? j.s.custom.techniques
+    : j.events.filter((e) => e.type === "ant" && e.ant === "Planner" && Array.isArray(e.data)).flatMap((e) => e.data.map((s) => s.technique));
+  return [...new Set(techniques.filter(Boolean).map((t) => (S.tech[t] || S.tech[t.split(".")[0]] || {}).tactic).filter(Boolean))];
+}
+function logLine(e) {
+  switch (e.type) {
+    case "run_start": return ["Run", e.label];
+    case "ant": return [e.ant, e.title + (e.detail ? "\n" + e.detail : ""), e.status];
+    case "run_end": {
+      const t = e.report.totals;
+      return ["Run", "finished: " + (OUTCOMES.filter((o) => t[o]).map((o) => `${t[o]} ${o}`).join(", ") || "no verdicts"), "good"];
+    }
+    case "cycle_start": return ["Collector", `cycle started with ${plural(e.steps.length, "step")}`];
+    case "index_check": return ["Splunk", `index check, ${e.index}: ${e.ok ? "exists" : "not found"}`, e.ok ? "ok" : "stop"];
+    case "auth_failed": return ["Splunk", "sign-in rejected (401)", "stop"];
+    case "search": return ["Query writer", `${e.kind} search: ${e.spl}`];
+    case "rows": return ["Splunk", `returned ${plural(e.rows.length, "row")}`];
+    case "dropped": return ["Splunk", "the connection dropped during the search", "stop"];
+    case "search_error": return ["Splunk", `error: ${e.message}`, "stop"];
+    case "cycle_end": return ["Collector", `cycle finished: ${(e.results || []).map((r) => r.outcome).join(", ") || "no verdict"}; searches: ${(e.searches || []).join(" + ") || "none"}`, "good"];
+    case "validator": case "template": return [e.type === "validator" ? "Validator" : "Template store", `${e.refused ? "refused" : "accepted"}: ${e.label}`, e.refused ? "stop" : "ok"];
+    case "harness": return ["Check", e.ok ? `passed: ${e.note}` : `failed: ${(e.fails || []).join("; ")}`, e.ok ? "good" : "none"];
+    default: return [e.type, ""];
+  }
+}
+
+/* ====================================================================== result cards */
+function tableBlock(card, title, heads, rows) {
+  card.append(el("div", { class: "body", style: "padding-top:0" }, el("div", { class: "fact" },
+    el("div", { class: "k", text: title }), el("div", { class: "tbl-wrap" }, el("table", {},
+      el("thead", {}, el("tr", {}, heads.map((h) => el("th", { text: h })))), el("tbody", {}, rows))))));
+}
+function techTactic(technique) {
+  const t = technique && (S.tech[technique] || S.tech[technique.split(".")[0]]);
+  return t ? t.tactic : "";
+}
+function scoreCard(end, label) {
   const r = end.report, t = r.totals;
   const facts = el("div", { class: "grid" });
-  const fact = (k, v, x) => facts.append(el("div", { class: "fact" }, el("div", { class: "k", text: k }),
+  const fact = (k, v, x, big) => facts.append(el("div", { class: "fact" + (big ? " big" : "") }, el("div", { class: "k", text: k }),
     el("div", { class: "v" }, v), x ? el("div", { class: "x" }, x) : null));
-  fact("Detection rate", r.detection_rate === null ? "not scored" : Math.round(r.detection_rate * 100) + "%",
-    `${t.Detected + t.Prevented} of ${r.scored_steps} scored steps; unchecked and not-run steps are left out`);
-  fact("Outcomes", ["Detected", "Prevented", "Missed", "Could not check"].filter((o) => t[o]).map((o) =>
+  fact("Detection rate", pct(r.detection_rate),
+    `${t.Detected + t.Prevented} of ${r.scored_steps} scored steps; unchecked and not-run steps are left out`, true);
+  fact("Outcomes", OUTCOMES.filter((o) => t[o]).map((o) =>
     el("span", { class: "chip " + OUTCOME_CLASS[o], text: `${t[o]} ${o}`, style: "margin:0 4px 4px 0" })),
     t["Not run"] ? `${t["Not run"]} not run (refused by the gatekeeper)` : null);
   const s = r.splunk_searches || {};
@@ -550,10 +877,39 @@ function scoreCard(end) {
     [s.narrow ? `${s.narrow} narrow` : null, s.wide ? `${s.wide} wide` : null, s.candidates ? `${s.candidates} for the learned rule` : null]
       .filter(Boolean).join(" + ") || "none");
   fact("Audit log", r.audit_intact ? "Chain intact" : "Chain broken", `${(end.audit || []).length} most recent entries below`);
-  const card = el("section", { class: "card" }, el("header", {}, el("h3", { text: "Scorecard" })), el("div", { class: "body" }, facts));
-  const table = (title, heads, rows) => card.append(el("div", { class: "body", style: "padding-top:0" }, el("div", { class: "fact" },
-    el("div", { class: "k", text: title }), el("div", { class: "tbl-wrap" }, el("table", {},
-      el("thead", {}, el("tr", {}, heads.map((h) => el("th", { text: h })))), el("tbody", {}, rows))))));
+  const card = el("section", { class: "card" }, el("header", {}, el("h3", { text: "Scorecard" }), el("span", { class: "sub", text: label })),
+    el("div", { class: "body" }, facts));
+  const table = (title, heads, rows) => tableBlock(card, title, heads, rows);
+
+  const byType = {};
+  for (const v of r.steps) {
+    const tac = techTactic(v.technique);
+    if (!tac) continue;
+    const row = byType[tac] = byType[tac] || { steps: 0 };
+    row.steps += 1; row[v.outcome] = (row[v.outcome] || 0) + 1;
+  }
+  const types = S.lib.tactics.filter((x) => byType[x]).concat(Object.keys(byType).filter((x) => !S.lib.tactics.includes(x)));
+  if (types.length) table("By attack type", ["Attack type", "Steps", "Detected", "Prevented", "Missed", "Could not check", "Share"], types.map((tac) => {
+    const row = byType[tac];
+    return el("tr", {}, el("td", {}, tacticTag(tac)), el("td", { text: row.steps }), ...OUTCOMES.map((o) => el("td", { text: row[o] || "–" })),
+      el("td", {}, el("div", { class: "bar", title: OUTCOMES.filter((o) => row[o]).map((o) => `${row[o]} ${o}`).join(", ") },
+        OUTCOMES.filter((o) => row[o]).map((o) => el("span", { class: OUTCOME_CLASS[o], style: `width:${100 * row[o] / row.steps}%` })))));
+  }));
+  if (r.steps.length) table("Steps", ["Attack type", "Test", "Host", "Verdict", "What each source saw", "Findings"], r.steps.map((v) => el("tr", {},
+    el("td", {}, techTactic(v.technique) ? tacticTag(techTactic(v.technique)) : "–", v.technique ? el("div", { class: "d tid", text: v.technique }) : null),
+    el("td", {}, b(v.test_id), el("div", { class: "d", text: v.title })), el("td", { class: "mono", text: v.host }),
+    el("td", {}, el("span", { class: "chip " + OUTCOME_CLASS[v.outcome], text: v.outcome }),
+      v.reason ? el("div", { class: "d", text: REASONS[v.reason] || v.reason }) : null),
+    el("td", {}, v.observations.map((o) => el("div", {}, b(o.source + ": "), o.outcome,
+      o.method === "learned_rule" ? " (learned rule)" : o.outcome === "Could not check" || o.outcome === "Missed" ? ` (${REASONS[o.reason] || o.reason})` : "")),
+      v.sightings ? el("div", { class: "d", text: `counted as ${plural(v.sightings, "detection")}` }) : null),
+    el("td", {}, v.findings.length ? v.findings.map((f) => el("div", { text: f })) : "–"))));
+  if (r.not_run.length) table("Not run", ["Test", "Host", "Refused because"], r.not_run.map((n) => el("tr", {},
+    el("td", {}, b(n.test_id)), el("td", { class: "mono", text: n.host }), el("td", { text: n.detail }))));
+  if (r.scenario && r.scenario.coverage) table(`Scenario coverage: ${r.scenario.name} (approved by ${r.scenario.approved_by})`,
+    ["Attack type", "Technique", "Covered", "How, or why not"], r.scenario.coverage.map((c) => el("tr", {},
+      el("td", {}, c.tactic ? tacticTag(c.tactic) : "–"), el("td", {}, b(c.technique), el("div", { class: "d", text: c.name })),
+      el("td", {}, el("span", { class: "chip " + (COVERAGE_CLASS[c.status] || "neu"), text: c.status })), el("td", { text: c.why }))));
   const dp = r.detection_proposals || {};
   if ((dp.proposals || []).length) table(`Detection proposals for the missed steps (tested on ${dp.events_checked} endpoint log entries; a person must approve and deploy)`,
     ["Detection", "Result of the test", "Catches", "Noise on normal work", "Starting-point search"], dp.proposals.map((p) => el("tr", {},
@@ -576,25 +932,9 @@ function scoreCard(end) {
       el("td", {}, el("span", { class: "chip " + OUTCOME_CLASS[x.should], text: x.should })),
       el("td", {}, el("span", { class: "chip " + OUTCOME_CLASS[x.said], text: x.said })),
       el("td", {}, el("span", { class: "chip " + (!x.ok ? "bad" : x.call === "caught" ? "det" : x.call.startsWith("correct") ? "neu" : "cnc"), text: x.call })))));
-  if (r.scenario && r.scenario.coverage) table(`Scenario coverage: ${r.scenario.name} (approved by ${r.scenario.approved_by})`,
-    ["Technique", "Tactic", "Covered", "How, or why not"], r.scenario.coverage.map((c) => el("tr", {},
-      el("td", {}, b(c.technique), el("div", { class: "d", text: c.name })), el("td", { text: c.tactic || "–" }),
-      el("td", {}, el("span", { class: "chip " + (COVERAGE_CLASS[c.status] || "neu"), text: c.status })),
-      el("td", { text: c.why }))));
   if ((r.teams || []).length) table("The same run, by team", ["Team", "Steps", "Seen", "Missed", "Could not check", "Detection rate"],
-    r.teams.map((t) => el("tr", {}, el("td", {}, b(t.team)), el("td", { text: t.steps }), el("td", { text: t.seen }),
-      el("td", { text: t.missed }), el("td", { text: t.unchecked }),
-      el("td", { text: t.detection_rate === null ? "not scored" : Math.round(t.detection_rate * 100) + "%" }))));
-  if (r.steps.length) table("Steps", ["Test", "Host", "Verdict", "What each source saw", "Findings"], r.steps.map((v) => el("tr", {},
-    el("td", {}, b(v.test_id), el("div", { class: "d", text: v.title })), el("td", { class: "mono", text: v.host }),
-    el("td", {}, el("span", { class: "chip " + OUTCOME_CLASS[v.outcome], text: v.outcome }),
-      v.reason ? el("div", { class: "d", text: REASONS[v.reason] || v.reason }) : null),
-    el("td", {}, v.observations.map((o) => el("div", {}, b(o.source + ": "), o.outcome,
-      o.method === "learned_rule" ? " (learned rule)" : o.outcome === "Could not check" || o.outcome === "Missed" ? ` (${REASONS[o.reason] || o.reason})` : "")),
-      v.sightings ? el("div", { class: "d", text: `counted as ${plural(v.sightings, "detection")}` }) : null),
-    el("td", {}, v.findings.length ? v.findings.map((f) => el("div", { text: f })) : "–"))));
-  if (r.not_run.length) table("Not run", ["Test", "Host", "Refused because"], r.not_run.map((n) => el("tr", {},
-    el("td", {}, b(n.test_id)), el("td", { class: "mono", text: n.host }), el("td", { text: n.detail }))));
+    r.teams.map((team) => el("tr", {}, el("td", {}, b(team.team)), el("td", { text: team.steps }), el("td", { text: team.seen }),
+      el("td", { text: team.missed }), el("td", { text: team.unchecked }), el("td", { text: pct(team.detection_rate) }))));
   if ((r.search_changes || []).length) table("Search changes and why (the analyst's change log)",
     ["Test", "Change", "Searched before", "Will search next", "Why"], r.search_changes.map((c) => el("tr", {},
       el("td", {}, b(c.test_id), el("div", { class: "d", text: c.host })),
@@ -610,75 +950,367 @@ function scoreCard(end) {
     el("td", { text: a.detail || a.reason || (a.actor ? "by " + a.actor : "–") }))));
   return card;
 }
-async function renderPipeline(main, run, animate, testId) {
-  for (const pr of pipelineRuns(run.events)) {
-    const stagesHost = el("div"), feed = el("ul", { class: "feed" });
-    main.append(el("section", { class: "card" }, el("header", {}, el("h3", { text: pr.label }),
-      el("span", { class: "sub", text: "every ant runs for real; Splunk, Falcon and the endpoint are mocks" })), stagesHost, feed));
-    for (let i = 0; i < pr.ants.length; i++) {
-      const e = pr.ants[i];
-      feed.append(el("li", {}, el("div", { class: "who", text: e.ant }), el("div", { class: "what" }, b(e.title), antDetail(e))));
-      if (animate) {
-        stagesHost.replaceChildren(antStages(pr, i + 1));
-        await new Promise((r) => setTimeout(r, 300));
-        if (state.selected !== testId) return false;
-      }
+function verdictCard(j, e) {
+  const custom = j.s.kind === "custom";
+  return el("section", { class: "card" }, el("div", { class: "check " + (e.ok ? "ok" : "no") },
+    b(e.ok ? (custom ? "Run finished." : "Check passed.") : (custom ? "Run failed." : "Check failed.")),
+    el("span", { text: e.ok ? e.note : (custom ? "" : "The run did not match the expected result: ") + (e.fails || []).join("; ") })));
+}
+function resultsCard(j, e, cycles) {
+  const facts = el("div", { class: "grid" });
+  const fact = (k, v, x) => facts.append(el("div", { class: "fact" }, el("div", { class: "k", text: k }),
+    el("div", { class: "v" }, v), x ? el("div", { class: "x" }, x) : null));
+  cycles.forEach((c, i) => {
+    const results = c.end.results, name = cycles.length > 1 ? `Run ${i + 1}` : "This run";
+    fact(`${name}: outcome`, results.length
+      ? results.map((r) => el("span", { class: "chip " + OUTCOME_CLASS[r.outcome], text: r.outcome, style: "margin-right:4px" })) : "No verdict yet",
+      results[0] && results[0].reason ? (REASONS[results[0].reason] || results[0].reason) : null);
+    const searches = c.end.searches || [];
+    fact(`${name}: searches sent`, plural(searches.length, "search"),
+      searches.length ? el("div", { class: "dots", title: searches.join(", ") },
+        searches.map((k) => el("span", { class: "dot " + k })), searches.join(" + ")) : "none sent");
+  });
+  const lastHit = cycles.flatMap((c) => c.end.results).filter((r) => r.outcome === "Detected").pop();
+  if (lastHit) fact("How it was matched", lastHit.method === "step_marker" ? "Step marker" : "IPs + implant (older matching)",
+    lastHit.field ? ["in field ", code(lastHit.field)] : null);
+  if (cycles.length > 1) {
+    const [a, z] = [cycles[0].end.searches.length, cycles[cycles.length - 1].end.searches.length];
+    fact("Repeat run against first run", `${z} against ${a}`,
+      z < a ? "fewer searches on the repeat run" : z === a ? "same count; the repeat search is narrower" : "more searches on the repeat run");
+  }
+  const decisions = j.events.filter((x) => x.type === "validator" || x.type === "template");
+  if (decisions.length) fact("Decisions", `${decisions.filter((x) => x.refused).length} refused, ${decisions.filter((x) => !x.refused).length} accepted`, "each one is listed in the steps");
+  const card = el("section", { class: "card" }, el("header", {}, el("h3", { text: "Results" })), el("div", { class: "body" }, facts));
+  const places = memoryPlaces(cycles.length ? cycles[cycles.length - 1].end.memory : {});
+  if (places.length) tableBlock(card, "Location memory after the run", ["Test", "Index", "Sourcetype", "Field", "Rule", "Delay", "Proven"],
+    places.map((p) => el("tr", {},
+      el("td", { class: "mono", text: p.key.replace("asset:", "").replace("|expectation:", " · ") }),
+      el("td", { class: "mono", text: p.index }), el("td", { class: "mono", text: p.sourcetype }),
+      el("td", { class: "mono", text: p.field || "–" }), el("td", { text: p.rule_name || "–" }),
+      el("td", { text: p.delay_seconds === null || p.delay_seconds === undefined ? "–" : `${p.delay_seconds} s` }),
+      el("td", { text: p.found_on || "–" }))));
+  card.append(el("div", { class: "check " + (e.ok ? "ok" : "no"), style: "border-top:1px solid var(--line-2)" },
+    b(e.ok ? "Check passed." : "Check failed."),
+    el("span", { text: e.ok ? "The harness compared this run with the expected result and they agree. " + (e.note || "")
+      : "The run did not match the expected result: " + (e.fails || []).join("; ") })));
+  return card;
+}
+
+/* ====================================================================== sandbox: launcher */
+function lastOf(scenario) {
+  let found = null;
+  for (const j of S.jobs.values()) if (j.s.scenario === scenario && j.s.kind === "check" && (!found || j.s.n > found.s.n)) found = j;
+  return found;
+}
+function checkChip(scenario) {
+  const j = lastOf(scenario);
+  return j ? phaseChip(j) : el("span", { class: "chip neu", text: "Not run" });
+}
+async function startChecks(ids) {
+  try { adoptJobs((await postJSON("/api/jobs", { ids })).jobs, true); }
+  catch (err) { alert("Could not start the job: " + err.message); }
+}
+function renderLaunch() {
+  const known = new Map(allTests().map((t) => [t.id, t]));
+  $("launch").replaceChildren(...FEATURED.filter(([id]) => known.has(id)).map(([id, title, blurb]) =>
+    el("div", { class: "tile" }, el("div", { class: "th" }, el("h3", { text: title }),
+      el("button", { class: "btn small", "aria-label": `Run the job: ${title}`, onclick: () => startChecks([id]), text: "Run" })), el("p", { text: blurb }))));
+  $("checksTitle").textContent = `All ${allTests().length} checks`;
+  $("runAll").textContent = `Run all ${allTests().length} checks`;
+  $("sbIntro").textContent = `Each job is the real ant and collector code in its own process, against its own mock Splunk, Falcon, OpenCTI and OpenAEV. ` +
+    `Up to ${S.slots} jobs run at the same time; the rest wait their turn.`;
+  renderCheckList();
+}
+function renderCheckList() {
+  $("checkGroups").replaceChildren(el("span", { class: "label", text: "Group" }),
+    el("span", { class: "seg", role: "group", "aria-label": "Group", style: "flex-wrap:wrap" },
+      [["all", `All (${allTests().length})`], ...S.groups.map((g) => [g.group, `${g.group} (${g.tests.length})`])].map(([value, text]) =>
+        el("button", { "aria-pressed": String(S.checkGroup === value), text, onclick: () => { S.checkGroup = value; renderCheckList(); } }))));
+  const q = S.checkQ.toLowerCase();
+  const rows = S.groups.filter((g) => S.checkGroup === "all" || g.group === S.checkGroup).flatMap((g) => g.tests)
+    .filter((t) => !q || `${t.title} ${t.blurb}`.toLowerCase().includes(q));
+  $("checkList").replaceChildren(...(rows.length ? rows.map((t) => el("div", { class: "crow" },
+    el("div", {}, el("div", { class: "t", text: t.title }), el("div", { class: "d", text: t.blurb })),
+    checkChip(t.id),
+    el("button", { class: "btn small", "aria-label": `Run check: ${t.title}`, text: "Run", onclick: () => startChecks([t.id]) })))
+    : [el("div", { class: "empty", text: "No check matches." })]));
+}
+
+/* ====================================================================== sandbox: job board */
+const cards = new Map();
+function fillCard(j) {
+  let card = cards.get(j.s.id);
+  if (!card) {
+    card = el("button", { class: "job", onclick: () => selectJob(j.s.id) });
+    cards.set(j.s.id, card);
+  }
+  const p = phase(j);
+  card.setAttribute("data-phase", p);
+  if (S.selected === j.s.id) card.setAttribute("aria-current", "true"); else card.removeAttribute("aria-current");
+  const tactics = jobTactics(j);
+  const kids = [
+    el("div", { class: "j-top" }, el("span", { class: "j-n", text: "#" + j.s.n }), el("span", { class: "j-title", text: j.s.title })),
+    el("div", { class: "j-kind" }, phaseChip(j), j.s.kind === "custom" ? `From the library · ${plural(j.s.custom.techniques.length, "attack type")}` : j.s.group,
+      tactics.length ? swatches(tactics) : null),
+  ];
+  if (p === "running" || p === "showing") {
+    const tl = buildTimeline(j);
+    const stages = tl.sections.length ? tl.sections[tl.sections.length - 1].stages : null;
+    if (stages) kids.push(el("div", { class: "segs" }, stages.map((st) => el("span", { class: st.active ? "active" : st.cls, title: st.label }))));
+    kids.push(el("div", { class: "j-now" }, tl.now ? [b(`${tl.now.run ? tl.now.run + " · " : ""}Step ${tl.now.n} · ${tl.now.who}: `), tl.now.text]
+      : "Starting its own mock Splunk, Falcon and OpenCTI…"));
+  }
+  const outcomes = p === "ok" || p === "bad" ? jobOutcomes(j) : [];
+  kids.push(el("div", { class: "j-foot" },
+    outcomes.map(([o, n]) => el("span", { class: "chip " + OUTCOME_CLASS[o], text: `${n} ${o}` })),
+    p === "bad" && !outcomes.length ? el("span", { text: (j.s.fails || [])[0] || "see the raw output" }) : null,
+    el("span", { class: "sp" }),
+    p === "waiting" ? "in the queue" : [j.s.slot ? `worker ${j.s.slot}` : null, j.s.seconds !== null ? `${j.s.seconds} s` : null].filter(Boolean).join(" · ")));
+  card.replaceChildren(...kids);
+  return card;
+}
+function layoutJobs() {
+  const host = $("jobs");
+  const list = [...S.jobs.values()];
+  if (!list.length) {
+    host.replaceChildren(el("div", { class: "card empty" }, "No jobs yet. Run one of the jobs above, or pick attack types in the attack library and send them here."));
+    return;
+  }
+  const rank = { running: 0, showing: 0, waiting: 1, ok: 2, bad: 2 };
+  const groups = [["Working now", []], ["Waiting", []], ["Finished", []]];
+  for (const j of list) groups[rank[phase(j)]][1].push(j);
+  groups[0][1].sort((a, z) => a.s.n - z.s.n); groups[1][1].sort((a, z) => a.s.n - z.s.n); groups[2][1].sort((a, z) => z.s.n - a.s.n);
+  const kids = [];
+  for (const [title, jobs] of groups) {
+    if (!jobs.length) continue;
+    kids.push(el("h2", { text: `${title} (${jobs.length})` }));
+    for (const j of jobs) kids.push(cards.get(j.s.id) || fillCard(j));
+  }
+  const focused = document.activeElement;
+  host.replaceChildren(...kids);
+  if (focused && focused.classList && focused.classList.contains("job") && host.contains(focused)) focused.focus();
+}
+function renderStrip() {
+  const count = { waiting: 0, running: 0, showing: 0, ok: 0, bad: 0 };
+  for (const j of S.jobs.values()) count[phase(j)] += 1;
+  const num = (n, label) => el("span", { class: "num" }, b(n), label);
+  $("strip").replaceChildren(
+    num(count.running + count.showing, "working now"), num(count.waiting, "waiting"),
+    num(count.ok, "finished"), num(count.bad, "failed"), el("span", { class: "sp" }),
+    seg("Step display", [["reading", "Slowed for reading"], ["fast", "Real speed"]], S.speed, (v) => { S.speed = v; store.set("oaev-speed", v); renderStrip(); }),
+    el("button", { class: "btn small", text: "Clear finished", disabled: !(count.ok + count.bad) || null, onclick: clearFinished }),
+    el("span", { class: "hint", text: S.speed === "reading"
+      ? `${S.slots} workers run jobs side by side. A job really takes about 3 seconds; its steps are shown slowed down so they can be read, and each card shows the real run time.`
+      : `${S.slots} workers run jobs side by side. Steps appear as fast as each job produces them.` }));
+  const active = count.running + count.waiting + count.showing;
+  $("tabBadge").hidden = !active;
+  $("tabBadge").textContent = active;
+}
+async function clearFinished() {
+  try { await postJSON("/api/clear", {}); } catch { return; }
+  for (const [id, j] of [...S.jobs]) if (j.s.status === "done") { S.jobs.delete(id); cards.delete(id); }
+  if (S.selected && !S.jobs.has(S.selected)) S.selected = null;
+  afterJobsChanged();
+  schedulePoll(0);
+}
+
+/* ====================================================================== sandbox: job detail */
+const D = { id: null };
+function selectJob(id) {
+  const before = S.selected;
+  S.selected = id;
+  for (const other of [before, id]) { const j = other && S.jobs.get(other); if (j) fillCard(j); }
+  renderDetail();
+}
+function rerun(j) {
+  if (j.s.kind === "custom") postJSON("/api/jobs", { custom: j.s.custom }).then((d) => adoptJobs(d.jobs, true)).catch((e) => alert(e.message));
+  else startChecks([j.s.scenario]);
+}
+function renderDetail() {
+  const host = $("detail");
+  const j = S.selected && S.jobs.get(S.selected);
+  if (!j) {
+    D.id = null;
+    host.replaceChildren(el("div", { class: "card empty", text: S.jobs.size ? "Pick a job on the left to follow it step by step."
+      : "Jobs appear here step by step: the scenario comes in, each ant does its part, and the results follow." }));
+    return;
+  }
+  if (D.id !== j.s.id) {
+    Object.assign(D, { id: j.s.id, secs: [], results: 0, lines: 0, raw: -1, mode: "steps", none: null,
+      head: el("section", { class: "card d-head" }), steps: el("div", { class: "d-steps" }), out: el("div", { class: "d-steps" }),
+      log: el("div", { class: "lines", role: "log", "aria-label": "Live log" }), logSeg: el("span") });
+    host.replaceChildren(D.head, el("div", { class: "d-body" }, D.steps,
+      el("aside", { class: "console" }, el("header", {}, el("h3", { text: "Live log" }), el("span", { class: "sp" }), D.logSeg), D.log)), D.out);
+  }
+  const tl = buildTimeline(j), p = phase(j);
+  const tactics = j.s.custom ? j.s.custom.techniques.map((t) => {
+    const info = S.tech[t] || {};
+    return el("span", { class: "tactic", style: `--tc:${tacticOf(info.tactic)[1]}`, title: tacticOf(info.tactic)[0] }, el("i"), `${t} ${info.name || ""}`);
+  }) : jobTactics(j).map(tacticTag);
+  put(D.head,
+    el("div", { class: "d-title" }, el("h2", { text: `#${j.s.n} ${j.s.title}` }), phaseChip(j), el("span", { class: "sp" }),
+      el("button", { class: "btn small", text: "Run again", "aria-label": `Run again: ${j.s.title}`, onclick: () => rerun(j) })),
+    el("div", { class: "d-meta", text: [j.s.kind === "custom" ? `From the attack library, on ${j.s.custom.hosts.join(" and ")}` : j.s.group,
+      `queued at ${j.s.at}`, j.s.slot ? `worker ${j.s.slot}` : null,
+      j.s.seconds !== null ? `${p === "running" ? "running for" : "ran in"} ${j.s.seconds} s` : null].filter(Boolean).join(" · ") }),
+    tactics.length ? el("div", { class: "d-tags" }, el("span", { class: "label", text: "Attack types" }), tactics) : null,
+    el("div", { class: "d-now" + (p === "ok" || p === "bad" ? " done" : ""), "aria-live": "polite" },
+      p === "waiting" ? "Waiting for a free worker." : !tl.now ? (p === "bad" ? b((j.s.fails || [])[0] || "The job failed.") : "Starting its own mock Splunk, Falcon and OpenCTI…")
+        : p === "ok" || p === "bad" ? [b(`${plural(tl.steps, "step")} shown. `), j.s.note || (j.s.fails || []).join("; ")]
+          : [b(`${tl.now.run ? tl.now.run + " · " : ""}Step ${tl.now.n} · ${tl.now.who}: `), tl.now.text]));
+
+  tl.sections.forEach((sec, i) => {
+    let node = D.secs[i];
+    if (!node) {
+      node = { stages: el("div"), feed: el("ol", { class: "feed" }), n: 0 };
+      D.secs[i] = node;
+      D.steps.append(el("section", { class: "card" }, el("header", {}, el("h3", { text: sec.label }), el("span", { class: "sub", text: sec.sub })), node.stages, node.feed));
     }
-    stagesHost.replaceChildren(antStages(pr, pr.ants.length));
-    if (pr.end) main.append(scoreCard(pr.end));
+    if (sec.stages) node.stages.replaceChildren(el("div", { class: "stages" }, sec.stages.map((st, k) =>
+      el("div", { class: "stage " + st.cls + (st.active ? " active" : "") }, el("div", { class: "n", text: `Stage ${k + 1}` }),
+        el("div", { class: "l", text: st.label }), el("div", { class: "s", text: st.active && !st.cls ? "working" : st.status })))));
+    for (; node.n < sec.items.length; node.n++) {
+      const it = sec.items[node.n];
+      node.feed.append(el("li", { class: it.status === "ok" ? null : it.status },
+        el("div", {}, el("div", { class: "who", text: it.who }), el("div", { class: "what" }, it.what()))));
+    }
+  });
+  const nothing = !tl.sections.length && !tl.results.length && (p === "ok" || p === "bad") && j.events.length >= j.s.events;
+  if (nothing && !D.none) { D.none = el("div", { class: "card empty", text: "This job produced no steps. The raw output shows what happened." }); D.steps.append(D.none); }
+  else if (!nothing && D.none) { D.none.remove(); D.none = null; }
+  for (; D.results < tl.results.length; D.results++) D.out.append(tl.results[D.results]());
+
+  D.logSeg.replaceChildren(el("span", { class: "seg" }, [["steps", "Steps log"], ["raw", "Raw output"]].map(([m, text]) =>
+    el("button", { "aria-pressed": String(D.mode === m), text, onclick: () => { D.mode = m; D.lines = 0; D.raw = -1; D.log.replaceChildren(); renderDetail(); } }))));
+  const stick = D.log.scrollTop + D.log.clientHeight >= D.log.scrollHeight - 30;
+  if (D.mode === "steps") {
+    for (; D.lines < j.shown; D.lines++) {
+      const e = j.events[D.lines];
+      const [who, text, status] = logLine(e);
+      D.log.append(el("div", { class: "ln " + (status && status !== "ok" ? status : "") },
+        el("span", { class: "lt", text: e.t !== undefined ? `+${Number(e.t).toFixed(2)}s` : "" }), el("span", { class: "ls", text: who }), el("span", { class: "lm", text })));
+    }
+    if (!j.shown && !D.log.firstChild) D.log.append(el("div", { class: "ln" }, el("span", { class: "lt" }), el("span", { class: "ls" }), el("span", { class: "lm", text: "waiting for the first step…" })));
+    else if (j.shown && D.log.firstChild && !D.log.firstChild.querySelector(".lt").textContent && D.log.children.length > 1) D.log.firstChild.remove();
+  } else if (D.raw !== j.log.length) {
+    D.raw = j.log.length;
+    D.log.replaceChildren(el("pre", { class: "raw", text: j.log || "no output yet" }));
   }
-  main.append(el("section", { class: "card" }, el("div", { class: "check " + (run.ok ? "ok" : "no"), style: "border-top:0" },
-    b(run.ok ? "Check passed." : "Check failed."), el("span", { text: run.ok ? run.note
-      : "The run did not match the expected result: " + (run.fails || []).join("; ") }))));
-  main.append(el("details", { class: "log" }, el("summary", { text: "Raw log of this run" }), el("pre", { text: run.log })));
-  return true;
+  if (stick) D.log.scrollTop = D.log.scrollHeight;
 }
 
-/* ---------- running ---------- */
-async function post(id) {
-  const res = await fetch("/api/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id }) });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "the run failed");
-  return data;
+/* ====================================================================== jobs: polling and playback */
+let pollTimer = null;
+function schedulePoll(ms) { clearTimeout(pollTimer); pollTimer = setTimeout(poll, ms); }
+function adoptJobs(summaries, select) {
+  for (const s of summaries) if (!S.jobs.has(s.id)) S.jobs.set(s.id, { s, events: [], log: "", shown: 0, nextAt: 0 });
+  if (select && summaries.length) S.selected = summaries[0].id;
+  afterJobsChanged();
+  if (select) { for (const j of S.jobs.values()) fillCard(j); renderDetail(); }
+  schedulePoll(0);
 }
-async function runTest(id) {
-  if (state.busy) return;
-  state.busy = true; delete state.runs[id]; $("runAll").disabled = true;
-  renderMain(false);
-  try {
-    const run = await post(id);
-    state.runs[id] = run; state.last[id] = run.last;
-  } catch (err) { state.runs[id] = { error: "Could not run the test: " + err.message }; }
-  state.busy = false; $("runAll").disabled = false;
-  renderSide();
-  renderMain(state.selected === id);   // replay only if this test is still on screen
-}
-async function runAll() {
-  if (state.busy) return;
-  state.busy = true;
-  const button = $("runAll"), tests = allTests();
-  button.disabled = true;
-  let passed = 0;
-  for (let i = 0; i < tests.length; i++) {
-    button.textContent = `Running ${i + 1} of ${tests.length}…`;
-    try {
-      const run = await post(tests[i].id);
-      state.runs[tests[i].id] = run; state.last[tests[i].id] = run.last;
-      if (run.ok) passed += 1;
-    } catch (err) { state.runs[tests[i].id] = { error: "Could not run the test: " + err.message }; }
-    renderSide();
+async function poll() {
+  const marks = {};
+  for (const j of S.jobs.values())
+    if (j.s.status !== "done" || j.events.length < j.s.events || j.log.length < j.s.log) marks[j.s.id] = [j.events.length, j.log.length];
+  let data;
+  try { data = await postJSON("/api/poll", { jobs: marks }); } catch { schedulePoll(2500); return; }
+  const seen = new Set();
+  for (const s of data.jobs) {
+    seen.add(s.id);
+    const j = S.jobs.get(s.id);
+    if (!j) S.jobs.set(s.id, { s, events: [], log: "", shown: 0, nextAt: 0, instant: !S.booted && s.status === "done", dirty: true });
+    else if (JSON.stringify(j.s) !== JSON.stringify(s)) { j.s = s; j.dirty = true; }
   }
-  state.busy = false; button.disabled = false;
-  button.textContent = `Run all tests (${passed} of ${tests.length} passed)`;
-  renderMain(false);
+  for (const id of [...S.jobs.keys()]) if (!seen.has(id)) { S.jobs.delete(id); cards.delete(id); if (S.selected === id) S.selected = null; }
+  for (const [id, u] of Object.entries(data.updates)) {
+    const j = S.jobs.get(id);
+    if (!j) continue;
+    j.events.push(...u.events); j.log += u.log; j.dirty = true;
+  }
+  if (!S.booted) { S.booted = true; if (!S.selected && S.jobs.size) S.selected = [...S.jobs.keys()].pop(); }
+  refresh();
+  const busy = [...S.jobs.values()].some((j) => j.s.status !== "done" || j.events.length < j.s.events || j.log.length < j.s.log);
+  if (busy) schedulePoll(350);
 }
-$("runAll").addEventListener("click", runAll);
+function computeLast() {
+  const out = {};
+  const jobs = [...S.jobs.values()].filter((j) => ["ok", "bad"].includes(phase(j)) && (j.s.kind === "custom" || ["threat_scenario", "full_run"].includes(j.s.scenario)))
+    .sort((a, z) => a.s.n - z.s.n);
+  for (const j of jobs) {
+    const end = j.events.filter((e) => e.type === "run_end").pop();
+    if (!end) continue;
+    const per = {};
+    for (const step of end.report.steps) if (step.technique) (per[step.technique] = per[step.technique] || new Set()).add(step.outcome);
+    for (const [t, set] of Object.entries(per)) out[t] = { outcomes: OUTCOMES.filter((o) => set.has(o)), job: j.s.n, title: j.s.title };
+  }
+  S.last = out;
+}
+function jobsSig() { return [...S.jobs.values()].map((j) => j.s.id + ":" + phase(j)).join("|"); }
+function afterJobsChanged() {
+  S.sig = jobsSig();
+  for (const j of S.jobs.values()) if (!cards.has(j.s.id)) fillCard(j);
+  layoutJobs(); renderStrip(); computeLast(); renderCheckList();
+  if (S.view === "library") renderLibrary();
+}
+function refresh() {
+  const structural = jobsSig() !== S.sig;
+  for (const j of S.jobs.values()) if (j.dirty || structural) fillCard(j);
+  if (structural) afterJobsChanged();
+  const sel = S.selected && S.jobs.get(S.selected);
+  if ((sel && (sel.dirty || structural)) || (!sel && D.id !== null) || (sel && D.id !== sel.s.id)) renderDetail();
+  for (const j of S.jobs.values()) j.dirty = false;
+}
+function tick() {
+  const now = performance.now();
+  let any = false;
+  for (const j of S.jobs.values()) {
+    if (j.shown >= j.events.length) continue;
+    if (S.speed === "fast" || j.instant) j.shown = j.events.length;
+    else if (now >= j.nextAt) { j.shown += 1; j.nextAt = now + (DELAY[j.events[j.shown - 1].type] || 150); }
+    else continue;
+    j.dirty = true; any = true;
+  }
+  if (any) refresh();
+}
 
-fetch("/api/catalogue").then((r) => r.json()).then((data) => {
-  state.groups = data.groups; state.last = data.last || {};
-  state.selected = testById("full_run") ? "full_run" : "marker_match";
-  renderSide(); renderMain(false);
-}).catch(() => { $("main").replaceChildren(el("div", { class: "empty", text: "The demo runner is not answering." })); });
+/* ====================================================================== shell */
+function showView(view) {
+  S.view = view;
+  for (const v of ["library", "sandbox"]) {
+    $("view-" + v).hidden = v !== view;
+    $("tab-" + v).setAttribute("aria-selected", String(v === view));
+  }
+  if (view === "library") renderLibrary(); else { renderTray(); renderDetail(); }
+  window.scrollTo(0, 0);
+}
+function applyTheme(theme) {
+  if (theme) document.documentElement.setAttribute("data-theme", theme);
+  const dark = theme ? theme === "dark" : window.matchMedia("(prefers-color-scheme: dark)").matches;
+  $("theme").textContent = dark ? "Light" : "Dark";
+  $("theme").onclick = () => { const next = dark ? "light" : "dark"; store.set("oaev-theme", next); applyTheme(next); };
+}
+applyTheme(store.get("oaev-theme"));
+$("tab-library").addEventListener("click", () => showView("library"));
+$("tab-sandbox").addEventListener("click", () => showView("sandbox"));
+$("libSearch").addEventListener("input", (e) => { S.f.q = e.target.value.trim(); renderLibrary(); });
+$("checkSearch").addEventListener("input", (e) => { S.checkQ = e.target.value.trim(); renderCheckList(); });
+$("trayClear").addEventListener("click", () => { S.picked.clear(); renderLibrary(); });
+$("trayRun").addEventListener("click", runSelection);
+$("runAll").addEventListener("click", (e) => { e.preventDefault(); startChecks(allTests().map((t) => t.id)); });
+
+Promise.all([fetch("/api/catalogue").then((r) => r.json()), fetch("/api/library").then((r) => r.json())]).then(([cat, lib]) => {
+  S.groups = cat.groups; S.slots = cat.slots || 4; S.lib = lib;
+  for (const a of lib.attacks) S.tech[a.technique] = { name: a.name, tactic: a.tactic };
+  for (const r of lib.not_simulated) S.tech[r.technique] = { name: r.name, tactic: r.tactic };
+  if (lib.hosts.length) S.hosts.add(lib.hosts[0]);
+  $("libIntro").textContent = `${lib.attacks.length} harmless actions the ants may run, coloured by attack type. ` +
+    `${lib.not_simulated.length} technique families are refused because they cannot be done harmlessly. Pick some and send them to the sandbox as a scenario.`;
+  $("legend").replaceChildren(...lib.tactics.map((t) => el("div", {}, tacticTag(t), el("span", { text: tacticOf(t)[2] }))));
+  renderLaunch(); renderLibrary(); renderStrip(); layoutJobs(); renderDetail();
+  setInterval(tick, 90);
+  poll();
+}).catch(() => { $("libIntro").textContent = "The demo runner is not answering. Start it with: python harness/demo_server.py"; });
 </script>
 </body>
 </html>

@@ -14,6 +14,12 @@ Splunk, no real Falcon tenant, no real host.
   python validation-ants/sandbox.py catalogue    # scenario list as JSON
   python validation-ants/sandbox.py playground   # one blind run (PLAYGROUND_SEED=n to repeat one)
   python validation-ants/sandbox.py playground_many 100   # 100 blind runs, tally of the calls
+  python validation-ants/sandbox.py library      # the attack library as JSON (for the demo page)
+  python validation-ants/sandbox.py custom       # run the attack types named in SANDBOX_CUSTOM
+
+Several sandboxes can run side by side: SANDBOX_PORT_BASE moves the three mock
+ports, and HARNESS_EVENTS_STREAM names a file that gets one JSON line per event
+as it happens.
 
 Run it with the splunk-es virtualenv's Python (it has pyoaev and requests).
 """
@@ -27,6 +33,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -36,20 +43,24 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from ants.agent_sim import FMT, RAW_INDEX, SimulatedAgent, Telemetry  # noqa: E402
+from ants.detection_engineer import LIBRARY_PATH as DETECTIONS_PATH  # noqa: E402
 from ants.detection_engineer import DetectionEngineer, evaluate, strip_markers  # noqa: E402
 from ants.analyst import SearchAnalyst  # noqa: E402
 from ants.gatekeeper import Gatekeeper, Refused  # noqa: E402
-from ants.intel import IntelAnt, IntelError, OpenCTIClient  # noqa: E402
+from ants.intel import TACTIC_ORDER, IntelAnt, IntelError, OpenCTIClient, Technique, Threat  # noqa: E402
 from ants.scenario_builder import ScenarioBuilder  # noqa: E402
 from ants.matcher import Matcher, RuleBook  # noqa: E402
 from ants.models import COULD_NOT_CHECK, DETECTED, MISSED, PREVENTED  # noqa: E402
 from ants.observers import FalconHttpClient, FalconObserver, SplunkObserver  # noqa: E402
 from ants.pipeline import run_validation  # noqa: E402
-from ants.planner import Planner  # noqa: E402
+from ants.planner import CATALOGUE_PATH, Planner  # noqa: E402
 from ants.reporter import Reporter, team_views  # noqa: E402
 
 SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "full_run"
-SPLUNK_PORT, FALCON_PORT, OPENCTI_PORT = 18189, 18190, 18191
+_PORT_BASE = int(os.environ.get("SANDBOX_PORT_BASE", "18189"))   # one block of three per sandbox
+SPLUNK_PORT, FALCON_PORT, OPENCTI_PORT = _PORT_BASE, _PORT_BASE + 1, _PORT_BASE + 2
+STARTED = time.time()
+EVENTS_STREAM = os.environ.get("HARNESS_EVENTS_STREAM")
 WORK = Path(tempfile.mkdtemp(prefix="oaev-ants-"))
 TELEMETRY = Telemetry()
 MOCK = {"falcon_mode": "ok", "splunk_searches": []}
@@ -86,7 +97,11 @@ DEFENCES = {
 
 
 def event(type_, **data):
-    EVENTS.append({"type": type_, **data})
+    item = {"type": type_, "t": round(time.time() - STARTED, 3), **data}
+    EVENTS.append(item)
+    if EVENTS_STREAM:               # one line per event, as it happens
+        with open(EVENTS_STREAM, "a", encoding="utf-8") as out:
+            out.write(json.dumps(item, default=str) + "\n")
 
 
 def emit(ant, title, detail="", status="ok", data=None):
@@ -1389,6 +1404,110 @@ def s_drift():
     return fails, "Detected -> Missed reported as a regression; Could not check is 'unknown', not a regression"
 
 
+# ----------------------------------------------------------------------------
+# Attack library (for the demo page) and a run of whatever was picked from it
+# ----------------------------------------------------------------------------
+def _defence_text(action_id):
+    d = DEFENCES.get("action:" + action_id)
+    if not d:
+        return "Nothing reacts, so the step should come back Missed."
+    parts = []
+    if d.get("falcon") == "prevent":
+        parts.append("Falcon blocks it")
+    elif d.get("falcon") == "detect":
+        parts.append("Falcon raises an alert")
+    if d.get("falcon"):
+        parts.append("the alert is forwarded to Splunk" if d.get("forward")
+                     else "the alert is not forwarded to Splunk")
+    if d.get("splunk_rule"):
+        parts.append(f"a Splunk rule fires ({d['splunk_rule']['rule_name']})")
+    text = ", ".join(parts) + "."
+    return text[0].upper() + text[1:]
+
+
+def attack_library():
+    """Every action on the allow-list and every family the ants refuse, by ATT&CK tactic."""
+    data = json.loads(Path(CATALOGUE_PATH).read_text(encoding="utf-8"))
+    detections = json.loads(Path(DETECTIONS_PATH).read_text(encoding="utf-8"))
+    names = data.get("techniques", {})
+
+    def info(tech):
+        entry = names.get(tech) or names.get(tech.split(".", 1)[0]) or {}
+        return entry.get("name", tech), entry.get("tactic", "")
+
+    attacks = []
+    for action_id, action in data["actions"].items():
+        tech = action["techniques"][0]
+        name, tactic = info(tech)
+        attacks.append({
+            "id": action_id, "technique": tech, "name": name, "tactic": tactic,
+            "description": action["description"], "command": action["command"],
+            "category": action.get("category", "endpoint"),
+            "fidelity": action.get("fidelity", "full"),
+            "agentless": bool(action.get("agentless")),
+            "expect": action.get("expect", {}),
+            "detections": [{"id": d["id"], "title": d["title"], "kind": d["kind"]}
+                           for d in detections["detections"] if tech in d["techniques"]],
+            "no_behaviour": detections.get("no_behaviour", {}).get(action_id),
+            "sandbox_defence": _defence_text(action_id),
+        })
+    refused = []
+    for tech, why in data.get("not_simulated", {}).items():
+        name, tactic = info(tech)
+        refused.append({"technique": tech, "name": name, "tactic": tactic, "why": why})
+    order = lambda t: TACTIC_ORDER.index(t) if t in TACTIC_ORDER else 99   # noqa: E731
+    used = sorted({a["tactic"] for a in attacks} | {r["tactic"] for r in refused}, key=order)
+    attacks.sort(key=lambda a: (order(a["tactic"]), a["technique"]))
+    refused.sort(key=lambda r: (order(r["tactic"]), r["technique"]))
+    return {"tactics": used, "attacks": attacks, "not_simulated": refused,
+            "hosts": [HOST1["name"], HOST2["name"]]}
+
+
+def s_custom():
+    """Run the attack types picked in the library through every ant. Shows a run; asserts little."""
+    spec = json.loads(os.environ.get("SANDBOX_CUSTOM") or "{}")
+    library = attack_library()
+    known = {a["technique"]: a for a in library["attacks"]}
+    known.update({r["technique"]: r for r in library["not_simulated"]})
+    picked = [t for t in dict.fromkeys(spec.get("techniques") or []) if t in known]
+    hosts = [h for h in (HOST1, HOST2) if h["name"] in (spec.get("hosts") or [HOST1["name"]])]
+    name = re.sub(r"[^A-Za-z0-9 _\-]", "", str(spec.get("name") or ""))[:48].strip() or "Library selection"
+    if not picked or not hosts:
+        return ["nothing to run: pick at least one attack type and one host"], "custom run"
+    ants, fails, box = Ants(), [], {}
+
+    def build():
+        techniques = sorted((Technique(id=t, name=known[t]["name"], tactic=known[t]["tactic"])
+                             for t in picked), key=lambda t: (t.order, t.id))
+        threat = Threat(id="library-selection", name=name, kind="selection",
+                        description="Picked in the attack library", techniques=techniques)
+        emit("Library", f"Scenario '{name}' came in from the attack library: "
+                        f"{len(techniques)} attack type(s)", data=threat.to_dict())
+        draft = ants.builder.draft(threat)
+        gaps = [c for c in draft["coverage"] if c["status"] in ("not simulated", "no action")]
+        emit("Scenario builder", f"Draft '{draft['id']}': {len(draft['tests'])} test(s) built from "
+                                 f"the action library; {len(gaps)} attack type(s) cannot be tested",
+             status="stop" if gaps else "ok", data=draft)
+        scenario = ants.builder.approve(draft["id"], "sandbox.operator")
+        emit("Scenario builder", f"Approved by {scenario['approved_by']} (the person who pressed "
+                                 f"Run); the approval is bound to these {len(scenario['tests'])} test(s)")
+        box["scenario"] = scenario
+        return ants.planner.use_scenario(scenario)
+
+    try:
+        report = ants.run(build, hosts, label=f"{name}: built and run", scenario=box)
+    except ValueError as e:
+        return [str(e)], "custom run"
+    if not report["audit_intact"]:
+        fails.append("the audit log does not verify")
+    totals = report["totals"]
+    rate = report["detection_rate"]
+    return fails, (f"{len(report['steps'])} step(s) on {len(hosts)} host(s): "
+                   f"{totals[DETECTED]} Detected, {totals[PREVENTED]} Prevented, "
+                   f"{totals[MISSED]} Missed, {totals[COULD_NOT_CHECK]} Could not check; "
+                   f"detection rate {'n/a' if rate is None else format(rate, '.0%')}")
+
+
 SCENARIOS = {
     "detection_loop": ("From Missed to Detected: proposal, approval, re-run", s_detection_loop),
     "detection_guards": ("Detection engineer: what it refuses", s_detection_guards),
@@ -1441,6 +1560,9 @@ def main():
         print(json.dumps([{"id": k, "title": v[0], "blurb": (v[1].__doc__ or "").strip()}
                           for k, v in SCENARIOS.items()]))
         sys.exit(0)
+    if SCENARIO == "library":
+        print(json.dumps(attack_library()))
+        sys.exit(0)
     if SCENARIO == "playground_many":
         logging.basicConfig(level=logging.CRITICAL)
         start(SplunkMock, SPLUNK_PORT), start(FalconMock, FALCON_PORT)
@@ -1455,14 +1577,16 @@ def main():
             print(f"  {n:5d}  {call}")
         print("\n".join(wrong) if wrong else "no wrong calls")
         sys.exit(1 if wrong else 0)
-    if SCENARIO not in SCENARIOS:
+    if SCENARIO not in SCENARIOS and SCENARIO != "custom":
         print(f"unknown scenario {SCENARIO!r}; choose one of: all, {', '.join(SCENARIOS)}")
         sys.exit(2)
+    title, runner = (("Attack types picked in the library", s_custom) if SCENARIO == "custom"
+                     else SCENARIOS[SCENARIO])
     logging.basicConfig(level=logging.CRITICAL)
     splunk, falcon = start(SplunkMock, SPLUNK_PORT), start(FalconMock, FALCON_PORT)
     start(OpenCTIMock, OPENCTI_PORT)
-    print("=" * 78 + f"\n SCENARIO: {SCENARIO} - {SCENARIOS[SCENARIO][0]}\n" + "=" * 78)
-    fails, note = SCENARIOS[SCENARIO][1]()
+    print("=" * 78 + f"\n SCENARIO: {SCENARIO} - {title}\n" + "=" * 78)
+    fails, note = runner()
     print("=" * 78)
     print(("SANDBOX FAIL " + note + " :: " + "; ".join(fails)) if fails else "SANDBOX PASS " + note)
     event("harness", ok=not fails, note=note, fails=fails)

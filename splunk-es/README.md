@@ -321,19 +321,29 @@ remembered place empty then wide hit, both empty (`Missed`), expired entry and p
 searches each run sends and exits non-zero when a scenario's result is not the expected one.
 
 **Sandbox demo page.** `harness/demo_server.py` serves a local page (`harness/demo/index.html`) on
-`http://127.0.0.1:8140` that shows the same scenarios as a catalogue, runs one on request and shows the run stage by
-stage (step fired, search written, validator, search sent, alert matched, outcome), with the outcome, the searches sent
-on a first and a repeat run, and what the location memory learned. Every run is the real collector code against the
-mock; the page shows the structured events the harness recorded (`HARNESS_EVENTS_FILE`). It binds to 127.0.0.1 only and
-needs nothing beyond the collector's own Python environment:
+`http://127.0.0.1:8140`. It binds to 127.0.0.1 only, answers only its own page, and needs nothing beyond the
+collector's own Python environment:
 
 ```shell
 python harness/demo_server.py          # then open http://127.0.0.1:8140
 ```
 
-When `validation-ants/` is present, the page also lists its scenarios under "All ants: full pipeline" and shows a run
-ant by ant (planner, gatekeeper, agent, both observers, analyst, matcher, reporter) with the scorecard, the analyst's
-search-change log and the gatekeeper's audit log.
+The page has two views.
+
+- **Sandbox.** A job board. A job is one scenario from the catalogue: the real collector code against the mock, in its
+  own process. Up to four jobs run at the same time, each with its own mock ports (`HARNESS_SPLUNK_PORT`,
+  `HARNESS_OPENAEV_PORT`); the rest wait in a queue. Each job card shows its stages and the step it is on. The job
+  that is open shows every step in order (step fired, search written, validator, search sent, alert matched, outcome),
+  a live log with the real time of each event, the raw output, and the results: outcome, searches sent on a first and a
+  repeat run, and what the location memory learned. The page follows a job through the events the harness writes as
+  they happen (`HARNESS_EVENTS_STREAM`, one JSON line per event). A job really takes about three seconds, so the page
+  can show its steps slowed down for reading; the real run time is on every card.
+- **Attack library** (when `validation-ants/` is present). Every harmless action the ants may run and every technique
+  family they refuse, coloured by ATT&CK tactic, with filters for attack type, watching tool, team and latest result.
+  Picked attack types go to the sandbox as a scenario: the scenario builder builds the tests, and the run goes through
+  every ant (planner, gatekeeper, agent, both observers, analyst, matcher, detection engineer, reporter). The
+  scorecard breaks the result down by attack type and shows the analyst's search-change log and the gatekeeper's audit
+  log. The `validation-ants` scenarios are listed with the collector's under "All checks".
 
 The demo proves the logic on synthetic data. It does not prove how a real Splunk or a real Falcon tenant behaves.
 

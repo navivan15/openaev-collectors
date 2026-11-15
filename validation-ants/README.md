@@ -128,7 +128,14 @@ splunk-es/.venv/Scripts/python validation-ants/sandbox.py full_run   # one scena
 The scenarios cover a scenario fetched from OpenCTI and built into tests, what the builder refuses, a full run, a repeat run using the memory, the analyst's change log, every gatekeeper control
 (scope, changed step, kill switch, window, replay, step limit, audit tampering, bypass attempts), Falcon failures,
 the pipeline and prevention gaps, the learned rule with its quiet window, and drift. The demo page
-(`splunk-es/harness/demo_server.py`) lists them under "All ants: full pipeline".
+(`splunk-es/harness/demo_server.py`) lists them under "All ants: full pipeline" and runs up to four of them side by
+side, each in its own process with its own mock ports (`SANDBOX_PORT_BASE`).
+
+The demo page also has an attack library: every action on the allow-list and every refused family, coloured by ATT&CK
+tactic (`sandbox.py library` prints it; the names and tactics are the `techniques` table in `ants/catalogue.json`).
+Attack types picked there run as `sandbox.py custom`, with the selection in `SANDBOX_CUSTOM`: the scenario builder
+drafts the tests, the person who pressed Run is recorded as the approver, and the run goes through every ant. That
+run shows a result; unlike the scenarios above it is not compared with an expected one.
 
 ## From Missed to Detected
 

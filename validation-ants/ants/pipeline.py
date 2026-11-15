@@ -37,8 +37,8 @@ def run_validation(
     emit("Planner", f"Planned {len(plan.steps)} step(s) from "
                     f"{len({s.test_id for s in plan.steps})} test(s) "
                     f"on {len({s.host for s in plan.steps})} host(s)",
-         data=[{"test": s.test_id, "title": s.title, "host": s.host, "marker": s.id,
-                "command": s.command} for s in plan.steps])
+         data=[{"test": s.test_id, "title": s.title, "technique": s.technique, "host": s.host,
+                "marker": s.id, "command": s.command} for s in plan.steps])
 
     # 2. Gatekeeper: sign what is in scope
     unsigned = gatekeeper.sign_plan(plan, approver)

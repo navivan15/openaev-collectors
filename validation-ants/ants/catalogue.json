@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "about": "The action allow-list. Every step any ant can plan is one of these, with the step marker filled in. Each action is harmless by itself: it prints, reads or looks something up, and changes nothing that matters. 'fidelity: partial' means the real technique would change the system and this action only runs the same tool in a read-only way.",
+  "about": "The action allow-list. Every step any ant can plan is one of these, with the step marker filled in. Each action is harmless by itself: it prints, reads or looks something up, and changes nothing that matters. 'fidelity: partial' means the real technique would change the system and this action only runs the same tool in a read-only way. 'techniques' gives each ATT&CK id its name and its tactic (the attack type the demo page colours and filters by).",
   "actions": {
     "echo_marker": {
       "description": "Run a shell that only echoes the step marker.",
@@ -81,6 +81,28 @@
       "techniques": ["T1021.002"], "category": "network", "fidelity": "partial",
       "expect": {"splunk": "detection"}
     }
+  },
+  "techniques": {
+    "T1059.001": {"name": "PowerShell", "tactic": "execution"},
+    "T1059.003": {"name": "Windows Command Shell", "tactic": "execution"},
+    "T1082": {"name": "System Information Discovery", "tactic": "discovery"},
+    "T1016": {"name": "System Network Configuration Discovery", "tactic": "discovery"},
+    "T1033": {"name": "System Owner/User Discovery", "tactic": "discovery"},
+    "T1057": {"name": "Process Discovery", "tactic": "discovery"},
+    "T1069.001": {"name": "Permission Groups Discovery: Local Groups", "tactic": "discovery"},
+    "T1087.001": {"name": "Account Discovery: Local Account", "tactic": "discovery"},
+    "T1018": {"name": "Remote System Discovery", "tactic": "discovery"},
+    "T1021.002": {"name": "Remote Services: SMB/Windows Admin Shares", "tactic": "lateral-movement"},
+    "T1090.001": {"name": "Proxy: Internal Proxy", "tactic": "command-and-control"},
+    "T1105": {"name": "Ingress Tool Transfer", "tactic": "command-and-control"},
+    "T1071.004": {"name": "Application Layer Protocol: DNS", "tactic": "command-and-control"},
+    "T1190": {"name": "Exploit Public-Facing Application", "tactic": "initial-access"},
+    "T1078": {"name": "Valid Accounts", "tactic": "initial-access"},
+    "T1070": {"name": "Indicator Removal", "tactic": "defense-evasion"},
+    "T1562": {"name": "Impair Defenses", "tactic": "defense-evasion"},
+    "T1003": {"name": "OS Credential Dumping", "tactic": "credential-access"},
+    "T1486": {"name": "Data Encrypted for Impact", "tactic": "impact"},
+    "T1490": {"name": "Inhibit System Recovery", "tactic": "impact"}
   },
   "not_simulated": {
     "T1003": "Credential dumping cannot be done harmlessly.",
