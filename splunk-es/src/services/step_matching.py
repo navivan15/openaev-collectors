@@ -57,6 +57,18 @@ MARKER_FIELDS: tuple[str, ...] = (
     "dns_query",
     "QueryName",
     "url_domain",
+    # web address requested by the step (proxy / firewall URL filtering logs)
+    "url",
+    "uri_path",
+    "http_url",
+    "resource",
+    # email sent by the step (mail gateway logs)
+    "subject",
+    "message_subject",
+    "msg.header.subject",
+    "message_id",
+    "messageID",
+    "msg.header.message-id",
 )
 
 # Alert fields naming the host the activity happened on. Splunk's own ``host``
@@ -81,6 +93,32 @@ KEY_TIME = "_alert_time"
 KEY_HOSTS = "_alert_hosts"
 KEY_MARKER_FIELDS = "_alert_marker_fields"
 KEY_SOURCE = "_alert_source"  # where the alert came from (index, sourcetype, ids)
+KEY_DISPOSITION = "_alert_disposition"  # blocked / flagged / allowed, when the row says
+
+# Fields in which a gateway log (mail gateway, firewall, proxy) states what it
+# did with the message or connection, and the values that mean it was stopped,
+# let through with a flag, or simply let through. Names follow the CIM and the
+# vendor add-ons' usual ones; they have not been checked against real data.
+DISPOSITION_FIELDS: tuple[str, ...] = (
+    "action",
+    "final_action",
+    "vendor_action",
+    "disposition",
+)
+BLOCKED_VALUES = frozenset(
+    {
+        "blocked", "block", "drop", "dropped", "reject", "rejected", "deny",
+        "denied", "prevent", "prevented", "quarantine", "quarantined",
+        "discard", "discarded", "deleted", "delete", "bounce", "bounced",
+    }  # fmt: skip
+)
+FLAGGED_VALUES = frozenset({"detect", "detected", "alert", "alerted", "flagged"})
+ALLOWED_VALUES = frozenset(
+    {
+        "allowed", "allow", "accept", "accepted", "delivered", "deliver",
+        "continue", "pass", "passed", "permit", "permitted",
+    }  # fmt: skip
+)
 
 # Fields that hold the CrowdStrike Falcon alert id when Falcon alerts are
 # forwarded into Splunk. The `crowdstrike` collector identifies the same alert
@@ -190,6 +228,23 @@ def extract_alert_source(raw: dict[str, Any]) -> dict[str, str]:
             out["falcon_alert_id"] = str(raw[f])
             break
     return out
+
+
+def extract_disposition(
+    raw: dict[str, Any], fields: tuple[str, ...] = DISPOSITION_FIELDS
+) -> str | None:
+    """What the row says was done: 'blocked', 'flagged', 'allowed' or None."""
+    for f in fields:
+        v = raw.get(f)
+        for item in v if isinstance(v, list) else [v]:
+            word = str(item or "").strip().lower()
+            if word in BLOCKED_VALUES:
+                return "blocked"
+            if word in FLAGGED_VALUES:
+                return "flagged"
+            if word in ALLOWED_VALUES:
+                return "allowed"
+    return None
 
 
 def extract_marker_fields(

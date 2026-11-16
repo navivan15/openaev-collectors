@@ -37,8 +37,9 @@ endpoint: a DETECTION expectation (the security product should raise an alert) a
 security product should block the action). This collector connects to Splunk Enterprise Security, registers a
 `SecurityPlatform` of type `SIEM`, and periodically reconciles those expectations with the events returned by the Splunk
 REST search API, marking each expectation as detected/not detected and attaching a trace that links back to the Splunk ES
-search results. Splunk ES is a detection source, so this collector validates DETECTION expectations only; PREVENTION
-expectations are not supported.
+search results. Splunk holds alerts, which settle DETECTION expectations. It can also hold the logs of tools that
+block things (a mail gateway, a firewall); when such a log says the step was blocked, it settles a PREVENTION
+expectation too (see "Gateway logs" below).
 
 ## Requirements
 
@@ -78,7 +79,7 @@ The collector is configured either through environment variables (recommended, r
 | Base URL       | `splunk_es.base_url`       | `SPLUNKES_BASE_URL`         | /            | Yes       | Splunk ES management URL (e.g. `https://splunk.company.com:8089`).                       |
 | Username       | `splunk_es.username`       | `SPLUNKES_USERNAME`         | /            | Yes       | Splunk username with REST API search permissions.                                       |
 | Password       | `splunk_es.password`       | `SPLUNKES_PASSWORD`         | /            | Yes       | Splunk user password.                                                                    |
-| Alerts Index   | `splunk_es.alerts_index`   | `SPLUNKES_ALERTS_INDEX`     | main         | No        | Splunk index to search for security alerts.                                              |
+| Alerts Index   | `splunk_es.alerts_index`   | `SPLUNKES_ALERTS_INDEX`     | main         | No        | Splunk index to search. Several may be given, comma-separated (`main,email,netfw`).      |
 | Time Window    | `splunk_es.time_window`    | `SPLUNKES_TIME_WINDOW`      | PT1H         | No        | Default search window when no date signatures are provided, as an ISO 8601 duration.     |
 | Offset         | `splunk_es.offset`         | `SPLUNKES_OFFSET`           | PT30S        | No        | Delay between retry attempts to absorb alert ingestion latency, as an ISO 8601 duration. |
 | Max Retry      | `splunk_es.max_retry`      | `SPLUNKES_MAX_RETRY`        | 3            | No        | Maximum number of retry attempts after the initial search returns no results.            |
@@ -86,6 +87,7 @@ The collector is configured either through environment variables (recommended, r
 | Match Window Before | `splunk_es.match_window_before` | `SPLUNKES_MATCH_WINDOW_BEFORE` | PT1M | No | Slack before the step's start date when tying an alert to a step (see [Step matching](#step-matching)). |
 | Match Window After  | `splunk_es.match_window_after`  | `SPLUNKES_MATCH_WINDOW_AFTER`  | PT5M | No | Slack after the step's end date when tying an alert to a step.                            |
 | Sourcetypes         | `splunk_es.sourcetypes`         | `SPLUNKES_SOURCETYPES`         | `*`  | No | Comma-separated sourcetype(s) the wide search is limited to. `*` searches every sourcetype of the index (slower). |
+| Log Sourcetypes     | `splunk_es.log_sourcetypes`     | `SPLUNKES_LOG_SOURCETYPES`     | `cp_log,pps_messagelog` | No | Comma-separated sourcetype(s) that are plain logs, not alerts (mail gateway, firewall, proxy). A row from one of these counts only when it says the step was blocked or flagged. A trailing `*` is allowed. |
 | Alert Delay         | `splunk_es.alert_delay`         | `SPLUNKES_ALERT_DELAY`         | PT30S | No | How long after a step ends its alerts usually take to be searchable. A step is not searched before this has passed. |
 | Search Limit        | `splunk_es.search_limit`        | `SPLUNKES_SEARCH_LIMIT`        | 1000 | No | Maximum rows one search returns.                                                          |
 | Memory Path         | `splunk_es.memory_path`         | `SPLUNKES_MEMORY_PATH`         | `splunkes_location_memory.json` | No | Local file for the [location memory](#location-memory). Empty disables it. |
@@ -183,8 +185,8 @@ flowchart LR
 
 On each run, the collector:
 
-1. Fetches the unfilled DETECTION expectations assigned to this collector from OpenAEV. PREVENTION expectations are
-   marked invalid because Splunk ES only supports detection.
+1. Fetches the unfilled expectations assigned to this collector from OpenAEV. DETECTION and PREVENTION expectations
+   go through the same searches; a PREVENTION expectation is settled only by a log that says the step was blocked.
 2. Leaves out steps whose alerts are not due yet (`SPLUNKES_ALERT_DELAY` after the step ended, or the remembered delay
    for a known test); they are picked up on a later run and get no verdict in the meantime.
 3. Writes the searches for all remaining steps together (see [Query writer](#query-writer)): one narrow search over
@@ -288,17 +290,43 @@ still satisfy them.
 | Outcome | Meaning | Written to OpenAEV |
 |---|---|---|
 | `Detected` | An alert was tied to the step (`match_method` = `step_marker` or `legacy`). | `Detected`, success, plus a trace |
-| `Prevented` | The tool blocked the step. Part of the shared outcome model; Splunk ES is detection-only and never returns it. | - |
-| `Missed` | Splunk was searched properly and no alert could be tied to the step. Reason: `no_alerts`, `no_matching_alert`, `marker_absent`, `wrong_host` or `outside_time_window`. | `Not Detected`, failure |
-| `Could not check` | The collector never got a trustworthy answer. Reason: `auth_failed`, `source_unreachable`, `data_source_missing`, `search_failed`, `query_refused`, `expectation_not_supported` or `collector_error`. | Nothing; the expectation stays pending |
+| `Prevented` | A PREVENTION expectation, and a log tied to the step says it was blocked (quarantined, dropped, rejected). | `Prevented`, success, plus a trace |
+| `Missed` | Splunk was searched properly and nothing settles the expectation. Reason: `no_alerts`, `no_matching_alert`, `marker_absent`, `wrong_host`, `outside_time_window`, `seen_not_flagged` (the step is in a plain log, let through, nothing raised) or `not_blocked` (a PREVENTION expectation, and the log says the step was let through). | `Not Detected` / `Not Prevented`, failure |
+| `Could not check` | The collector never got a trustworthy answer. Reason: `auth_failed`, `source_unreachable`, `data_source_missing`, `search_failed`, `query_refused`, `no_verdict_in_logs` (a PREVENTION expectation, and nothing in Splunk says whether the step was blocked), `expectation_not_supported` or `collector_error`. | Nothing; the expectation stays pending |
 
 The outcome names, the reasons and `match_method` / `search_path` are deliberately not Splunk-specific, so another
 collector (for example `crowdstrike`, which can also return `Prevented`) can use the same model without renaming.
 
-`Could not check` covers a Splunk connection or authentication failure, a missing or unreadable alerts index (checked
-with `GET /services/data/indexes/{index}` before searching; skipped for wildcard or multi-index values), a search that
-returns no rows together with an `ERROR` message, and a PREVENTION expectation sent to this detection-only source. The
-outcome, its reason and the match method are logged per expectation and counted in the run summary.
+`Could not check` covers a Splunk connection or authentication failure, a missing or unreadable index (each
+configured index is checked with `GET /services/data/indexes/{index}` before searching; skipped for a wildcard value),
+a search that returns no rows together with an `ERROR` message, and a PREVENTION expectation for which Splunk holds no
+log that says what was done. The outcome, its reason and the match method are logged per expectation and counted in
+the run summary.
+
+### Gateway logs: mail gateway and firewall logs that say what was done
+
+Some tools do not raise alerts; they log every message or connection together with what they did with it. When those
+logs are forwarded to Splunk (Proofpoint and Check Point, for example), the collector reads the verdict from the log.
+
+- **Tying a log to a step.** The marker is searched for as before. Extra fields are read for it: the email subject
+  and message id (`subject`, `message_subject`, `msg.header.subject`, `message_id`, `messageID`,
+  `msg.header.message-id`) and the web address (`url`, `uri_path`, `http_url`, `resource`).
+- **Reading the verdict.** The first of `action`, `final_action`, `vendor_action`, `disposition` with a known value:
+  blocked (`blocked`, `drop`, `reject`, `deny`, `prevent`, `quarantine`, `discard`, `deleted`, `bounce`), flagged
+  (`detect`, `alert`, `flagged`) or allowed (`allowed`, `accept`, `delivered`, `continue`, `pass`, `permit`).
+- **A log is not an alert.** For the sourcetypes in `SPLUNKES_LOG_SOURCETYPES`, a row counts as a detection only
+  when it says blocked or flagged. "Delivered" or "Accept" means the step was seen and let through: `Missed`,
+  reason `seen_not_flagged`. For every other sourcetype a row is an alert and counts whatever its action says.
+- **PREVENTION expectations.** Blocked gives `Prevented`. Let through or only flagged gives `Missed`, reason
+  `not_blocked`. No row with a verdict gives `Could not check`, reason `no_verdict_in_logs`: silence is not proof
+  that the step got through.
+- **Several indexes.** `SPLUNKES_ALERTS_INDEX=main,email,netfw` searches all three in one search and checks each
+  one before an empty answer is trusted.
+- The trace's alert name carries `verdict=blocked` (or `flagged` / `allowed`).
+
+The field and sourcetype names are the vendor add-ons' and the CIM's usual ones. They have been run against a lab
+Splunk with synthetic events shaped that way, not against real Proofpoint or Check Point data. With a custom
+`SPLUNKES_QUERY_TEMPLATE`, PREVENTION expectations still come out as `Could not check`.
 
 OpenAEV has no third state for an expectation result, so `Could not check` is recorded by not writing a verdict. If the
 cause is not fixed before the expectation expires, OpenAEV itself will still mark it as failed; the collector log is
@@ -367,7 +395,9 @@ first run has to poll for a late alert it costs 2 or more; the repeat run still 
   (e.g. `main`).
 - API endpoints used:
   - `POST /services/search/jobs` (oneshot search via the Splunk REST API, authenticated with HTTP basic authentication)
-  - `GET /services/data/indexes/{index}` (checks that the alerts index exists before an empty search is trusted)
+  - `GET /services/data/indexes/{index}` (checks that each configured index exists before an empty search is trusted)
+  - `GET /services/authentication/current-context` and `GET /services/authorization/roles/{role}` (checks that the
+    account's roles allow searching the index; both are readable by an account whose only capability is `search`)
 - Reference: [Splunk roles and capabilities](https://docs.splunk.com/Documentation/Splunk/latest/Security/Aboutusersandroles)
   and the [Splunk REST API reference](https://docs.splunk.com/Documentation/Splunk/latest/RESTREF/RESTsearch)
 
@@ -380,7 +410,8 @@ extraction). Make sure `SPLUNKES_BASE_URL` targets the Splunk management port (t
 
 ## Additional information
 
-- This collector validates detection only; it does not support prevention expectations.
+- Prevention expectations are validated only from logs that state what was done with the step (see "Gateway
+  logs"). An alert alone never settles one.
 - The SPL query is fully customizable via `SPLUNKES_QUERY_TEMPLATE`; a custom template must keep the `| table _time`
   pipe so that the resulting events can be parsed.
 - TLS certificate verification is on by default (`SPLUNKES_VERIFY_SSL`). For a Splunk Enterprise instance with a

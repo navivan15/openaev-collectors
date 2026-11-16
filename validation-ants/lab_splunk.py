@@ -11,7 +11,9 @@ running in a container on this machine, to find where the mock was wrong.
 Groups: wire (sign-in, index check, failed search), markers (where a step
 marker can sit and still be found), run (all ants, first run and repeat run),
 detections (the detection engineer's proposed searches), reader (the same
-through a read-only account that may search two indexes and nothing else).
+through a read-only account that may search four indexes and nothing else),
+gateways (email and firewall tests: synthetic mail gateway and firewall logs
+in their own indexes, read with the read-only account).
 
 Rules this script keeps:
 
@@ -363,10 +365,12 @@ def check_detections():
 # reader: a least-privilege account, as a real deployment would use
 # ----------------------------------------------------------------------------
 READER, READER_ROLE, PRIVATE_INDEX = "svc_oaev_reader", "oaev_reader", "oaev_private"
+LAB_INDEXES = ("telemetry", sandbox.MAIL_INDEX, sandbox.FIREWALL_INDEX)       # besides 'main'
+READER_INDEXES = ("main", *LAB_INDEXES)
 
 
 def ensure_reader():
-    """A role that can only search main and telemetry, and a user with only that role."""
+    """A role that can only search the four lab indexes, and a user with only that role."""
     import secrets as _secrets
     values = read_secrets()
     if "SPLUNK_READER_PASSWORD" not in values:
@@ -375,11 +379,13 @@ def ensure_reader():
         values = read_secrets()
     password = values["SPLUNK_READER_PASSWORD"]
     LAB.ensure_index(PRIVATE_INDEX)
-    if LAB.get(f"/services/authorization/roles/{READER_ROLE}").status_code == 404:
-        r = LAB.session.post(MANAGEMENT + "/services/authorization/roles", timeout=30, data=[
-            ("output_mode", "json"), ("name", READER_ROLE), ("capabilities", "search"),
-            ("srchIndexesAllowed", "main"), ("srchIndexesAllowed", "telemetry"), ("srchIndexesDefault", "main")])
-        r.raise_for_status()
+    allowed = [("srchIndexesAllowed", name) for name in READER_INDEXES]
+    exists = LAB.get(f"/services/authorization/roles/{READER_ROLE}").status_code != 404
+    r = LAB.session.post(
+        MANAGEMENT + "/services/authorization/roles" + (f"/{READER_ROLE}" if exists else ""), timeout=30,
+        data=[("output_mode", "json"), ("capabilities", "search"), ("srchIndexesDefault", "main"), *allowed]
+        + ([] if exists else [("name", READER_ROLE)]))
+    r.raise_for_status()
     if LAB.get(f"/services/authentication/users/{READER}").status_code == 404:
         LAB.post("/services/authentication/users", name=READER, password=password, roles=READER_ROLE).raise_for_status()
     else:
@@ -448,13 +454,59 @@ def check_reader():
     lab_ants()          # back to the admin account for anything that follows
 
 
+# ----------------------------------------------------------------------------
+# gateways: email and firewall tests, read from mail gateway and firewall logs
+# ----------------------------------------------------------------------------
+def check_gateways():
+    account = ensure_reader()
+    ants = lab_ants(**account)
+    tests = ["T-MAIL-005", "T-WEB-006", "T-NET-004"]
+    # Source addresses used by this group only. A plain connection has no marker and is
+    # matched on its addresses, so a firewall log left by another group on the same
+    # address pair would be read as this step's. (That happened on the first lab run.)
+    first, second = dict(sandbox.HOST1, source_ip="10.0.0.15"), dict(sandbox.HOST2, source_ip="10.0.0.16")
+
+    ants.defences["T-NET-004"] = {"checkpoint": "drop"}
+    report = ants.run(tests, [first], label="lab Splunk: the mail gateway quarantines, the firewall drops")
+    got = outcomes(report)
+    wrong = {t: got[t]["outcome"] for t in tests if got[t]["outcome"] != PREVENTED}
+    note("gateways", "blocked email and requests read as Prevented", "differs" if wrong else "same",
+         f"wrong: {wrong}" if wrong else "all three Prevented, from logs in the email and firewall indexes")
+    for test, index, field in (("T-MAIL-005", sandbox.MAIL_INDEX, "msg.header.subject"),
+                               ("T-WEB-006", sandbox.FIREWALL_INDEX, "resource")):
+        splunk = next((o for o in got[test]["observations"] if o["source"] == "splunk"), {})
+        evidence = splunk.get("evidence") or {}
+        ok = (evidence.get("index"), splunk.get("field")) == (index, field)
+        note("gateways", f"{test} tied through its marker", "same" if ok else "differs",
+             f"index {evidence.get('index')}, sourcetype {evidence.get('sourcetype')}, field {splunk.get('field')}, "
+             f"log says {evidence.get('verdict')}")
+    weak = any("weak match" in f for f in got["T-NET-004"]["findings"])
+    note("gateways", "plain dropped connection flagged as weak", "same" if weak else "differs",
+         "matched on addresses only, so a person is asked to confirm it" if weak else f"findings: {got['T-NET-004']['findings']}")
+    searches = report["splunk_searches"]
+    note("gateways", "one search over three indexes", "same" if (searches["wide"], searches["narrow"]) == (1, 0) else "differs",
+         f"{searches['narrow']} narrow + {searches['wide']} wide")
+
+    # Let through, on the second host, for the same reason.
+    ants.defences.update({"T-MAIL-005": {"proofpoint": "deliver"}, "T-WEB-006": {"checkpoint": "accept"},
+                          "T-NET-004": {"checkpoint": "accept"}})
+    report = ants.run(tests, [second], label="lab Splunk: both let the test through")
+    got = outcomes(report)
+    wrong = {t: (got[t]["outcome"], got[t]["reason"]) for t in tests
+             if (got[t]["outcome"], got[t]["reason"]) != (MISSED, "seen_not_flagged")}
+    note("gateways", "delivered email and accepted requests read as Missed", "differs" if wrong else "same",
+         f"wrong: {wrong}" if wrong else "all three Missed: in the logs, let through, nothing raised")
+    lab_ants()
+
+
 def main():
     logging.basicConfig(level=logging.CRITICAL)
     print(f" LAB SPLUNK {LAB.version()} at {MANAGEMENT} (this machine only); Falcon is a mock")
-    LAB.ensure_index("telemetry")
+    for name in LAB_INDEXES:
+        LAB.ensure_index(name)
     sandbox.start(sandbox.FalconMock, sandbox.FALCON_PORT)
     groups = {"wire": check_wire, "markers": check_markers, "run": check_run, "detections": check_detections,
-              "reader": check_reader}
+              "reader": check_reader, "gateways": check_gateways}
     for name, fn in groups.items():
         if GROUP in ("all", name):
             print("=" * 78 + f"\n {name}\n" + "=" * 78)

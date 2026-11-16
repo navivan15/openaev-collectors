@@ -185,7 +185,7 @@ class Matcher:
             if o.needs_confirmation:
                 findings.append(f"needs confirmation: {o.source} match came from a learned rule "
                                 f"('{o.evidence.get('rule_name')}'), not from the marker")
-            if o.method == "legacy" and o.outcome == DETECTED and step.agentless:
+            if o.method == "legacy" and o.outcome in (DETECTED, PREVENTED) and step.agentless:
                 findings.append(f"weak match: {o.source} matched on addresses only, "
                                 f"with no step marker; confirm it by hand")
             if o.evidence.get("learned_rule_rejected"):

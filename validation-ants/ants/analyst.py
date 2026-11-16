@@ -29,7 +29,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .models import COULD_NOT_CHECK, DETECTED, Observation, Step
+from .models import COULD_NOT_CHECK, DETECTED, PREVENTED, Observation, Step
+
+# Found in Splunk, whether the row is an alert or a log that says the step was blocked.
+FOUND = (DETECTED, PREVENTED)
 
 WIDE = "wide search: configured index, all configured sourcetypes, the step's full time window"
 
@@ -111,13 +114,13 @@ class SearchAnalyst:
                 change, why = "unchecked", (
                     f"Splunk could not be checked ({obs.reason}), so nothing was learned "
                     f"and nothing was changed.")
-            elif obs.outcome == DETECTED and not was:
+            elif obs.outcome in FOUND and not was:
                 change, why = "learned", f"The detection was found at {found}."
-            elif obs.outcome == DETECTED and _where(now) - _where(was):
+            elif obs.outcome in FOUND and _where(now) - _where(was):
                 change, why = "added", (
                     f"The detection was not in the remembered place; the {obs.search_path} "
                     f"search found it at {found}.")
-            elif obs.outcome == DETECTED:
+            elif obs.outcome in FOUND:
                 change, why = "confirmed", (
                     f"Found again in a remembered place by the {obs.search_path} search: "
                     f"{found}.")

@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "about": "The action allow-list. Every step any ant can plan is one of these, with the step marker filled in. Each action is harmless by itself: it prints, reads or looks something up, and changes nothing that matters. 'fidelity: partial' means the real technique would change the system and this action only runs the same tool in a read-only way. 'techniques' gives each ATT&CK id its name and its tactic (the attack type the demo page colours and filters by).",
+  "about": "The action allow-list. Every step any ant can plan is one of these, with the step marker filled in. Each action is harmless by itself: it prints, reads or looks something up, and changes nothing that matters. 'fidelity: partial' means the real technique would change the system and this action only runs the same tool in a read-only way. 'tool' names the security tool whose logs, forwarded to Splunk, say what happened to the step; an email action goes to a test mailbox on the gatekeeper's scope list and nowhere else. 'techniques' gives each ATT&CK id its name and its tactic (the attack type the demo page colours and filters by).",
   "actions": {
     "echo_marker": {
       "description": "Run a shell that only echoes the step marker.",
@@ -80,6 +80,18 @@
       "agentless": true,
       "techniques": ["T1021.002"], "category": "network", "fidelity": "partial",
       "expect": {"splunk": "detection"}
+    },
+    "email_marker": {
+      "description": "Send one harmless, marked email to a dedicated test mailbox. Its only link points at a reserved address that cannot resolve.",
+      "command": "send-test-mail --to {mailbox} --subject \"OAEV test oaev-step-{marker}\" --link http://oaev-step-{marker}.sim.invalid/",
+      "techniques": ["T1566.002"], "category": "email", "fidelity": "partial", "tool": "Proofpoint",
+      "expect": {"splunk": "prevention"}
+    },
+    "web_request_marker": {
+      "description": "Request a marked web address on an in-scope test server, through the firewall.",
+      "command": "curl.exe -s -m 5 http://{target_ip}/oaev-step-{marker}",
+      "techniques": ["T1071.001"], "category": "network", "fidelity": "partial", "tool": "Check Point",
+      "expect": {"splunk": "prevention"}
     }
   },
   "techniques": {
@@ -93,6 +105,8 @@
     "T1087.001": {"name": "Account Discovery: Local Account", "tactic": "discovery"},
     "T1018": {"name": "Remote System Discovery", "tactic": "discovery"},
     "T1021.002": {"name": "Remote Services: SMB/Windows Admin Shares", "tactic": "lateral-movement"},
+    "T1566.002": {"name": "Phishing: Spearphishing Link", "tactic": "initial-access"},
+    "T1071.001": {"name": "Application Layer Protocol: Web Protocols", "tactic": "command-and-control"},
     "T1090.001": {"name": "Proxy: Internal Proxy", "tactic": "command-and-control"},
     "T1105": {"name": "Ingress Tool Transfer", "tactic": "command-and-control"},
     "T1071.004": {"name": "Application Layer Protocol: DNS", "tactic": "command-and-control"},
@@ -121,6 +135,10 @@
     {"id": "T-DNS-003", "title": "Lookup of a marked hostname", "technique": "T1071.004",
      "action": "dns_lookup_marker", "expect": {"splunk": "detection"}},
     {"id": "T-NET-004", "title": "Connection to a file-sharing port", "technique": "T1021.002",
-     "action": "tcp_probe", "expect": {"splunk": "detection"}}
+     "action": "tcp_probe", "expect": {"splunk": "detection"}},
+    {"id": "T-MAIL-005", "title": "Marked test email with a link", "technique": "T1566.002",
+     "action": "email_marker", "expect": {"splunk": "prevention"}},
+    {"id": "T-WEB-006", "title": "Marked web request through the firewall", "technique": "T1071.001",
+     "action": "web_request_marker", "expect": {"splunk": "prevention"}}
   ]
 }

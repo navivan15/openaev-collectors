@@ -232,6 +232,7 @@ class SplunkESTraceService:
             ("field", match_field),
             ("rule", source.get("rule_name")),
             ("falcon_alert_id", source.get("falcon_alert_id")),
+            ("verdict", matching_data.get("_alert_disposition")),
         ):
             if value:
                 parts.append(f"{label}={str(value)[:80]}")

@@ -87,10 +87,10 @@ class SplunkObserver:
             {"type": "target_ipv4_address", "value": step.target_ip},
         ]
         if not agentless:
-            signatures += [
-                {"type": "parent_process_name", "value": implant_name(step.id)},
-                {"type": "target_hostname_address", "value": step.host},
-            ]
+            signatures.append({"type": "parent_process_name", "value": implant_name(step.id)})
+            if step.channel != "email":
+                # A mail gateway's log names the gateway, not the endpoint.
+                signatures.append({"type": "target_hostname_address", "value": step.host})
         signatures += [
             {"type": "start_date", "value": step.start.strftime(FMT)},
             {"type": "end_date", "value": step.end.strftime(FMT)},
@@ -125,15 +125,20 @@ class SplunkObserver:
                 continue
             item = (r.matched_alerts or [{}])[0]
             source = item.get("_alert_source") or {}
+            verdict = item.get("_alert_disposition")
+            # A log that says the step was blocked (mail gateway, firewall) is a
+            # prevention, read from Splunk.
+            outcome = PREVENTED if r.outcome.value == DETECTED and verdict == "blocked" \
+                else r.outcome.value
             out.append(Observation(
-                step_id=step.id, source=self.name, outcome=r.outcome.value,
+                step_id=step.id, source=self.name, outcome=outcome,
                 reason=r.outcome_reason, method=r.match_method, field=r.match_field,
                 search_path=r.search_path,
                 evidence={
                     "index": source.get("index"), "sourcetype": source.get("sourcetype"),
                     "rule_name": source.get("rule_name"),
                     "falcon_alert_id": source.get("falcon_alert_id"),
-                    "time": item.get("_alert_time"),
+                    "time": item.get("_alert_time"), "verdict": verdict,
                 } if r.outcome.value == DETECTED else {"message": r.error_message},
             ))
         return out

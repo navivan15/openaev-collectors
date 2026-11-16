@@ -26,6 +26,7 @@ from typing import Any, Callable
 from .exception import SplunkESValidationError
 from .spl_validator import SplunkESQueryRefusedError, validate_spl
 from .step_matching import (
+    DISPOSITION_FIELDS,
     FALCON_ALERT_ID_FIELDS,
     HOST_FIELDS,
     MARKER_FIELDS,
@@ -53,7 +54,7 @@ _MARKER_RE = re.compile(r"^[0-9a-f\-]{32,36}$")
 _HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-.]{0,252}$")
 
 SRC_IP_FIELDS = ("src_ip", "src", "source_ip", "client_ip")
-DST_IP_FIELDS = ("dst_ip", "dest", "dest_ip", "destination_ip", "server_ip")
+DST_IP_FIELDS = ("dst_ip", "dst", "dest", "dest_ip", "destination_ip", "server_ip")
 
 _BASE_FIELDS = (
     "_time",
@@ -70,6 +71,20 @@ _BASE_FIELDS = (
     "url",
     "path",
 )
+
+
+def split_indexes(value: str | None) -> list[str]:
+    """The configured index setting as a list: 'main, email' -> ['main', 'email']."""
+    return [part.strip() for part in str(value or "").split(",") if part.strip()]
+
+
+def index_clause(indexes: list[str]) -> str:
+    """What follows 'index=' for one or several indexes.
+
+    ``main`` or ``main OR index=email``. Splunk's search evaluates OR before
+    the implied AND, so the indexes group together without parentheses.
+    """
+    return " OR index=".join(indexes)
 
 
 def is_safe_index(name: str) -> bool:
@@ -95,6 +110,9 @@ def table_fields() -> str:
         *MARKER_FIELDS,
         *HOST_FIELDS,
         *FALCON_ALERT_ID_FIELDS,
+        # What a gateway log says it did. Splunk returns only the fields the
+        # search asks for, so these have to be asked for (found on a real Splunk).
+        *DISPOSITION_FIELDS,
     ):
         if name not in seen:
             seen.append(name)
@@ -310,11 +328,15 @@ class QueryWriter:
         sourcetypes: list[str] | None = None,
         limit: int = 1000,
     ) -> None:
-        """Validate the configured index / sourcetypes once."""
-        if not is_safe_index(index):
-            raise SplunkESQueryRefusedError(
-                f"Search refused: index name '{index}' is not a plain index name"
-            )
+        """Validate the configured index(es) / sourcetypes once."""
+        self.indexes = split_indexes(index)
+        if not self.indexes:
+            raise SplunkESQueryRefusedError("Search refused: no index is configured")
+        for name in self.indexes:
+            if not is_safe_index(name):
+                raise SplunkESQueryRefusedError(
+                    f"Search refused: index name '{name}' is not a plain index name"
+                )
         self.sourcetypes = [s for s in (sourcetypes or ["*"]) if s] or ["*"]
         for sourcetype in self.sourcetypes:
             if not is_safe_sourcetype(sourcetype):
@@ -322,7 +344,7 @@ class QueryWriter:
                     f"Search refused: sourcetype '{sourcetype}' is not a plain name"
                 )
         self.store = store
-        self.index = index
+        self.index = index_clause(self.indexes)
         self.limit = int(limit)
 
     def _sourcetype_filter(self) -> str:

@@ -8,6 +8,7 @@ how to fetch data, and how to process expectations.
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from fnmatch import fnmatchcase
 from typing import Any
 
 from pyoaev.apis.inject_expectation.model import (  # type: ignore[import-untyped]
@@ -45,7 +46,13 @@ from .query_writer import (
     is_safe_sourcetype,
 )
 from .spl_validator import SplunkESQueryRefusedError
-from .step_matching import KEY_SOURCE, KEY_TIME, StepContext, parse_time
+from .step_matching import (
+    KEY_DISPOSITION,
+    KEY_SOURCE,
+    KEY_TIME,
+    StepContext,
+    parse_time,
+)
 
 LOG_PREFIX = "[SplunkESExpectationService]"
 
@@ -292,8 +299,9 @@ class SplunkESExpectationService:
         memory = self._get_memory()
 
         for pos, expectation in enumerate(expectations):
-            if not isinstance(expectation, DetectionExpectation):
-                # Prevention (-> Could not check) and unknown types.
+            if not isinstance(
+                expectation, (DetectionExpectation, PreventionExpectation)
+            ):
                 results[pos] = self._safe_process(expectation, detection_helper)
                 continue
             try:
@@ -315,6 +323,13 @@ class SplunkESExpectationService:
                 {
                     "pos": pos,
                     "expectation": expectation,
+                    # A prevention expectation is settled only by a log that
+                    # says the step was blocked (mail gateway, firewall).
+                    "kind": (
+                        "prevention"
+                        if isinstance(expectation, PreventionExpectation)
+                        else "detection"
+                    ),
                     "ctx": ctx,
                     "matching": matching_signatures,
                     "key": key,
@@ -396,7 +411,7 @@ class SplunkESExpectationService:
                 oaev_data,
                 step["matching"],
                 detection_helper,
-                "detection",
+                step.get("kind", "detection"),
                 step_context=step["ctx"],
             )
             return hit, ""
@@ -526,6 +541,20 @@ class SplunkESExpectationService:
 
         for step in pending:
             reason = reasons.get(step["pos"], "no_alerts")
+            if step.get("kind") == "prevention" and reason != "not_blocked":
+                # Nothing in Splunk says what happened to this step. That is not
+                # proof that it was let through, so no verdict is written.
+                results[step["pos"]] = ExpectationResult(
+                    expectation_id=str(step["expectation"].inject_expectation_id),
+                    is_valid=False,
+                    expectation=step["expectation"],
+                    error_message="No log in Splunk says whether this step was blocked",
+                    skip_verdict=True,
+                    outcome=Outcome.COULD_NOT_CHECK,
+                    outcome_reason=CouldNotCheckReason.NO_VERDICT_IN_LOGS.value,
+                    search_path="wide",
+                )
+                continue
             error: SplunkESServiceError = (
                 SplunkESNoAlertsFoundError("No data available for matching")
                 if reason == "no_alerts"
@@ -945,6 +974,10 @@ class SplunkESExpectationService:
                         )
                         rejections.append("wrong_host")
                         continue
+                    refusal = self._row_refusal(data_item, expectation_type)
+                    if refusal:
+                        rejections.append(refusal)
+                        continue
                     self.logger.info(
                         f"{LOG_PREFIX} Step marker match for {expectation_type} "
                         f"expectation (field '{marker_field}')"
@@ -997,6 +1030,10 @@ class SplunkESExpectationService:
                                 f"{LOG_PREFIX} Matching data: {data_item}"
                             )
 
+                            refusal = self._row_refusal(data_item, expectation_type)
+                            if refusal:
+                                rejections.append(refusal)
+                                continue
                             result = {
                                 "is_valid": True,
                                 "matching_data": [data_item],
@@ -1022,7 +1059,13 @@ class SplunkESExpectationService:
                     )
 
             reason = "no_matching_alert"
-            for candidate in ("wrong_host", "outside_time_window", "marker_absent"):
+            for candidate in (
+                "not_blocked",
+                "seen_not_flagged",
+                "wrong_host",
+                "outside_time_window",
+                "marker_absent",
+            ):
                 if candidate in rejections:
                     reason = candidate
                     break
@@ -1040,6 +1083,43 @@ class SplunkESExpectationService:
             raise
         except Exception as e:
             raise SplunkESMatchingError() from e
+
+    def _is_log_sourcetype(self, sourcetype: str) -> bool:
+        """Whether rows of this sourcetype are plain logs rather than alerts."""
+        configured = getattr(
+            getattr(self.config, "splunk_es", None), "log_sourcetypes", ""
+        )
+        names = [n.strip() for n in str(configured or "").split(",") if n.strip()]
+        return any(fnmatchcase(sourcetype.lower(), n.lower()) for n in names)
+
+    def _row_refusal(
+        self, data_item: dict[str, Any], expectation_type: str
+    ) -> str | None:
+        """Why a row tied to the step still does not settle the expectation.
+
+        * prevention: only a row saying the step was blocked settles it. A row
+          saying it was let through is a miss; a row that does not say is no
+          answer either way.
+        * detection: an alert settles it. A row from a plain log sourcetype
+          (mail gateway, firewall) only counts when it says the step was
+          blocked or flagged; "delivered" or "accept" means it was seen and let
+          through with nothing raised.
+        """
+        disposition = data_item.get(KEY_DISPOSITION)
+        if expectation_type == "prevention":
+            if disposition == "blocked":
+                return None
+            return (
+                "not_blocked"
+                if disposition in ("allowed", "flagged")
+                else "no_verdict_in_logs"
+            )
+        sourcetype = str((data_item.get(KEY_SOURCE) or {}).get("sourcetype") or "")
+        if disposition not in ("blocked", "flagged") and self._is_log_sourcetype(
+            sourcetype
+        ):
+            return "seen_not_flagged"
+        return None
 
     def _match_with_detection_helper(
         self,
@@ -1339,7 +1419,8 @@ class SplunkESExpectationService:
             "service_name": "Splunk ES",
             "supported_signatures": [sig.value for sig in self.SUPPORTED_SIGNATURES],
             "supports_detection": True,
-            "supports_prevention": False,
+            # Only from logs that say what was done (mail gateway, firewall).
+            "supports_prevention": True,
             "description": f"Splunk ES expectation validation service ({len(self.SUPPORTED_SIGNATURES)} signature types, detection only)",
         }
         self.logger.debug(f"{LOG_PREFIX} Service info: {info}")

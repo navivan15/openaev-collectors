@@ -451,6 +451,9 @@ const REASONS = {
   query_refused: "the query was refused before anything was sent",
   expectation_not_supported: "Splunk only detects; it cannot judge a prevention",
   collector_error: "the collector hit an internal error",
+  seen_not_flagged: "the step is in the logs, and it was let through with nothing raised",
+  not_blocked: "the step is in the logs, and it was not blocked",
+  no_verdict_in_logs: "no log in Splunk says whether the step was blocked",
 };
 const TEMPLATE = { narrow: "narrow_location_search", wide: "wide_step_search" };
 const FEATURED = [
@@ -458,6 +461,7 @@ const FEATURED = [
   ["full_run", "All ants, one run", "The four base tests through every ant: plan, gate, run, observe, match, report."],
   ["playground", "Blind playground", "Random steps, hidden defences and decoy alerts. A referee checks every call the ants make."],
   ["detection_loop", "From Missed to Detected", "A missed step gets a tested detection proposal. A person approves and deploys it, and the re-run catches the step."],
+  ["gateways", "Email and firewall tests", "A marked test email and marked web requests. The mail gateway's and the firewall's own logs, in Splunk, say blocked or let through."],
 ];
 
 const S = {
@@ -478,7 +482,7 @@ function matches(item) {
   if (f.tactics.size && !f.tactics.has(item.tactic)) return false;
   if (f.show === "run" && !item.runnable) return false;
   if (f.show === "refused" && item.runnable) return false;
-  if (f.watch !== "any" && !(item.runnable && item.expect[f.watch])) return false;
+  if (f.watch !== "any" && !(item.runnable && (item.tool ? item.tool === f.watch : item.expect[f.watch]))) return false;
   if (f.team !== "any" && !(item.runnable && item.category === f.team)) return false;
   if (f.result !== "any") {
     const last = S.last[item.technique];
@@ -510,13 +514,18 @@ function attackCard(item) {
     card.append(el("p", { class: "desc", text: item.why }),
       el("dl", { class: "facts" }, fact("Why refused", "The ants only run harmless actions. This family has none, so the scenario builder leaves it out and says so in the coverage table.")));
   } else {
-    const watched = Object.entries(item.expect).map(([src, kind]) => `${src === "falcon" ? "Falcon" : "Splunk"} (${kind})`).join(", ");
+    const watched = item.tool ? `${item.tool}, read from its logs in Splunk (${item.expect.splunk || "detection"})`
+      : Object.entries(item.expect).map(([src, kind]) => `${src === "falcon" ? "Falcon" : "Splunk"} (${kind})`).join(", ");
+    const where = item.category === "email" ? "In the email's subject, so the mail gateway's log can be tied to this exact step"
+      : item.id === "web_request_marker" ? "In the web address, so the firewall's log can be tied to this exact step"
+        : item.agentless ? "None: a plain connection has no place for one, so it matches on addresses and time"
+          : "Carried in the command, so an alert can be tied to this exact step";
     card.append(el("p", { class: "desc", text: item.description }), el("div", { class: "cmd", text: item.command }),
       el("dl", { class: "facts" },
         fact("Watched by", watched || "nothing"),
-        fact("Team", item.category === "network" ? "Network (NetOps)" : "Endpoint (SecOps)"),
+        fact("Team", item.category === "network" ? "Network (NetOps)" : item.category === "email" ? "Email (SecOps)" : "Endpoint (SecOps)"),
         fact("How real", item.fidelity === "partial" ? "Partial: the same tool, in a read-only way" : "Full: the same command an intruder would run"),
-        fact("Marker", item.agentless ? "None: a plain connection has no place for one, so it matches on addresses and time" : "Carried in the command, so an alert can be tied to this exact step"),
+        fact("Marker", where),
         fact("In this sandbox", item.sandbox_defence),
         fact("Detection on file", item.detections.length ? item.detections.map((d) => el("div", { text: d.title }))
           : (item.no_behaviour || "None in the library yet."))));
@@ -541,8 +550,10 @@ function renderLibrary() {
   const set = (key) => (value) => { S.f[key] = value; renderLibrary(); };
   $("libSegs").replaceChildren(
     seg("Show", [["all", "All"], ["run", "Can run"], ["refused", "Refused"]], S.f.show, set("show")),
-    seg("Watched by", [["any", "Any"], ["falcon", "Falcon"], ["splunk", "Splunk"]], S.f.watch, set("watch")),
-    seg("Team", [["any", "Any"], ["endpoint", "Endpoint"], ["network", "Network"]], S.f.team, set("team")),
+    seg("Watched by", [["any", "Any"], ["falcon", "Falcon"], ["splunk", "Splunk"],
+      ...[...new Set(S.lib.attacks.map((a) => a.tool).filter(Boolean))].map((t) => [t, t])], S.f.watch, set("watch")),
+    seg("Team", [["any", "Any"], ["endpoint", "Endpoint"], ["network", "Network"],
+      ...(S.lib.attacks.some((a) => a.category === "email") ? [["email", "Email"]] : [])], S.f.team, set("team")),
     seg("Latest result", [["any", "Any"], ["Detected", "Detected"], ["Prevented", "Prevented"], ["Missed", "Missed"], ["none", "Not run yet"]], S.f.result, set("result")));
   const tried = S.lib.attacks.filter((a) => S.last[a.technique]);
   const tally = {};
@@ -692,20 +703,21 @@ function describeCycle(cycle) {
   for (const r of end.results) {
     const step = steps.find((s) => s.id === r.id) || {};
     const who = steps.length > 1 ? ` (${step.host || step.inject || ""})` : "";
-    if (r.outcome === "Detected") {
-      say("Matcher", b(`Alert tied to the step${who}. `), r.method === "step_marker"
+    if (r.outcome === "Detected" || r.outcome === "Prevented") {
+      say("Matcher", b(`${r.outcome === "Prevented" ? "A log that says 'blocked' is" : "Alert"} tied to the step${who}. `), r.method === "step_marker"
         ? ["Marker found in field ", code(r.field || "?"), "."] : "Matched on IPs and implant (older matching).",
         r.path ? el("span", { class: "d", text: ` Found by the ${r.path} search.` }) : "");
     } else if (r.outcome === "Missed") say("Matcher", b(`No alert could be tied to the step${who}: `), REASONS[r.reason] || r.reason, ".");
     say("Outcome", el("span", { class: "chip " + OUTCOME_CLASS[r.outcome], text: r.outcome }),
       r.outcome === "Could not check" ? el("span", { class: "d", text: ` ${REASONS[r.reason] || r.reason}.` }) : "",
+      r.outcome === "Missed" && REASONS[r.reason] && /^(seen_not_flagged|not_blocked)$/.test(r.reason) ? el("span", { class: "d", text: ` ${REASONS[r.reason]}.` }) : "",
       el("div", { class: "d" }, r.verdict ? `Written to OpenAEV: ${r.verdict[0]}.`
         : "Nothing written to OpenAEV. The expectation stays pending and is not scored as a miss."));
   }
   for (const name of end.traces || []) say("Evidence", "Trace attached: ", code(name));
   if (end.results.length) say("Memory", memoryChange(cycle.start.memory, end.memory));
   const outcomes = end.results.map((r) => r.outcome);
-  const all = (o) => outcomes.length && outcomes.every((x) => x === o);
+  const all = (o) => outcomes.length && outcomes.every((x) => x === o || (o === "Detected" && x === "Prevented"));
   const stages = [
     ["Step fired", "done", plural(steps.length, "step")],
     ["Search written", sent || refused ? "done" : "stop", sent ? plural(sent, "search") : refused ? "1 search" : "none"],

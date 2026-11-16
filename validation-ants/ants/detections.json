@@ -58,6 +58,8 @@
     "echo_marker": "This step only prints the marker. There is nothing a real rule could key on except the marker itself.",
     "ps_echo_marker": "This step only prints the marker. There is nothing a real rule could key on except the marker itself.",
     "drop_marker_file": "An empty file in the temp folder is too ordinary to detect by itself; the marker in its name is what makes it stand out.",
-    "dns_lookup_marker": "The looked-up name is special only because of the marker and the reserved test domain."
+    "dns_lookup_marker": "The looked-up name is special only because of the marker and the reserved test domain.",
+    "email_marker": "The mail gateway decides what happens to an email. The fix is a change to its policy, which a person makes; a Splunk search cannot stop a message.",
+    "web_request_marker": "The firewall decides what happens to a web request. The fix is a change to its policy, which a person makes; a Splunk search cannot stop a connection."
   }
 }

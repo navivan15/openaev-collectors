@@ -42,7 +42,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-from ants.agent_sim import FMT, RAW_INDEX, SimulatedAgent, Telemetry  # noqa: E402
+from ants.agent_sim import (FIREWALL_INDEX, FMT, MAIL_INDEX, RAW_INDEX,  # noqa: E402
+                            SimulatedAgent, Telemetry)
 from ants.detection_engineer import LIBRARY_PATH as DETECTIONS_PATH  # noqa: E402
 from ants.detection_engineer import DetectionEngineer, evaluate, strip_markers  # noqa: E402
 from ants.analyst import SearchAnalyst  # noqa: E402
@@ -66,8 +67,11 @@ TELEMETRY = Telemetry()
 MOCK = {"falcon_mode": "ok", "splunk_searches": []}
 EVENTS = []
 
-HOST1 = {"name": "WS-TEST-01", "source_ip": "10.0.0.5", "target_ip": "10.0.0.9"}
-HOST2 = {"name": "WS-TEST-02", "source_ip": "10.0.0.6", "target_ip": "10.0.0.9"}
+# 'mailbox' is the dedicated test mailbox an email test for that host goes to.
+HOST1 = {"name": "WS-TEST-01", "source_ip": "10.0.0.5", "target_ip": "10.0.0.9",
+         "mailbox": "oaev-test-01@lab.invalid"}
+HOST2 = {"name": "WS-TEST-02", "source_ip": "10.0.0.6", "target_ip": "10.0.0.9",
+         "mailbox": "oaev-test-02@lab.invalid"}
 OUTSIDER = {"name": "WS-PROD-77", "source_ip": "10.9.9.7", "target_ip": "10.0.0.9"}
 ALL_TESTS = ["T-EXEC-001", "T-FILE-002", "T-DNS-003", "T-NET-004"]
 DNS_RULE = {"sourcetype": "stream:dns", "rule_name": "DNS lookup of rare domain", "field": "query"}
@@ -78,6 +82,8 @@ DEFENCES = {
                    "falcon_rule": "File written to temp by script"},
     "T-DNS-003": {"splunk_rule": DNS_RULE},
     "T-NET-004": {},   # nothing sees it
+    "T-MAIL-005": {"proofpoint": "quarantine"},     # the mail gateway quarantines it
+    "T-WEB-006": {"checkpoint": "drop"},            # the firewall drops it
     # Defaults per action, for tests built from a scenario.
     "action:ps_echo_marker": {"falcon": "detect", "forward": True, "falcon_rule": "Suspicious PowerShell"},
     "action:echo_marker": {"falcon": "detect", "forward": True},
@@ -92,6 +98,8 @@ DEFENCES = {
     "action:drop_marker_file": {"falcon": "prevent", "forward": True,
                                 "falcon_rule": "File written to temp by script"},
     "action:dns_lookup_marker": {"splunk_rule": DNS_RULE},
+    "action:email_marker": {"proofpoint": "quarantine"},
+    "action:web_request_marker": {"checkpoint": "drop"},
     # network_config, process_list, local_accounts, neighbours, tcp_probe: nothing sees them
 }
 
@@ -158,6 +166,11 @@ class SplunkMock(BaseHTTPRequestHandler):
             if not terms or any(t.search(text) for t in terms):
                 # A real Splunk gives the time with milliseconds and a UTC offset.
                 rows.append(dict(row, _time=row["_time"] + ".000+00:00"))
+        # A real Splunk returns only the fields the search asks for with '| table'.
+        table = re.search(r"\| table (.+?)(?: \||$)", spl)
+        if table:
+            wanted = {f.strip().strip('"') for f in table.group(1).split(",")}
+            rows = [{k: v for k, v in row.items() if k in wanted} for row in rows]
         self._json(200, {"results": rows})
 
 
@@ -311,6 +324,7 @@ class Ants:
         self.scope = scope or {
             "allowed_hosts": [HOST1["name"], HOST2["name"]],
             "allowed_targets": [HOST1["target_ip"]],
+            "allowed_mailboxes": [HOST1["mailbox"], HOST2["mailbox"]],
             "allowed_actions": list(self.planner.actions),
             "not_before": (now - timedelta(hours=1)).isoformat(),
             "not_after": (now + timedelta(hours=2)).isoformat(),
@@ -326,7 +340,8 @@ class Ants:
             "COLLECTOR_NAME": "SplunkES", "COLLECTOR_PERIOD": "PT1M",
             "SPLUNKES_BASE_URL": f"http://127.0.0.1:{SPLUNK_PORT}",
             "SPLUNKES_USERNAME": "svc_mock", "SPLUNKES_PASSWORD": "mock-only",
-            "SPLUNKES_ALERTS_INDEX": "main", "SPLUNKES_MAX_RETRY": "0",
+            # Alerts, mail gateway logs and firewall logs each have their own index.
+            "SPLUNKES_ALERTS_INDEX": f"main,{MAIL_INDEX},{FIREWALL_INDEX}", "SPLUNKES_MAX_RETRY": "0",
             "SPLUNKES_OFFSET": "PT1S", "SPLUNKES_VERIFY_SSL": "false",
             "SPLUNKES_MEMORY_PATH": str(work / "location_memory.json"),
             **splunk_env,
@@ -630,7 +645,9 @@ def playground_setup(ants, rng, n_steps):
     """Pick random steps and decide, hidden from the ants, what the defences do."""
     import uuid as _uuid
     truths, pairs = {}, []
-    actions = list(ants.planner.actions)
+    # The mail gateway and firewall tests are not in the blind pool yet: the hidden
+    # behaviours below are written for endpoint tools.
+    actions = [a for a, spec in ants.planner.actions.items() if not spec.get("tool")]
     for i in range(n_steps):
         action_id = rng.choice(actions)
         action = ants.planner.actions[action_id]
@@ -1427,6 +1444,12 @@ def _defence_text(action_id):
                      else "the alert is not forwarded to Splunk")
     if d.get("splunk_rule"):
         parts.append(f"a Splunk rule fires ({d['splunk_rule']['rule_name']})")
+    if d.get("proofpoint"):
+        parts.append("the mail gateway quarantines the email and logs it to Splunk"
+                     if d["proofpoint"] == "quarantine" else "the mail gateway delivers the email")
+    if d.get("checkpoint"):
+        parts.append("the firewall drops the request and logs it to Splunk"
+                     if d["checkpoint"] == "drop" else "the firewall accepts the request")
     text = ", ".join(parts) + "."
     return text[0].upper() + text[1:]
 
@@ -1451,6 +1474,7 @@ def attack_library():
             "category": action.get("category", "endpoint"),
             "fidelity": action.get("fidelity", "full"),
             "agentless": bool(action.get("agentless")),
+            "tool": action.get("tool"),
             "expect": action.get("expect", {}),
             "detections": [{"id": d["id"], "title": d["title"], "kind": d["kind"]}
                            for d in detections["detections"] if tech in d["techniques"]],
@@ -1514,7 +1538,60 @@ def s_custom():
                    f"detection rate {'n/a' if rate is None else format(rate, '.0%')}")
 
 
+def s_gateways():
+    """Email and firewall tests: the mail gateway's and the firewall's own logs, in Splunk, say what happened."""
+    ants, fails = Ants(), []
+    tests = ["T-MAIL-005", "T-WEB-006", "T-NET-004"]
+    ants.defences["T-NET-004"] = {"checkpoint": "drop"}     # a plain connection, dropped
+    r1 = ants.run(tests, [HOST1], label="the mail gateway quarantines, the firewall drops")
+    want(fails, r1, "T-MAIL-005", PREVENTED)
+    want(fails, r1, "T-WEB-006", PREVENTED)
+    want(fails, r1, "T-NET-004", PREVENTED, finding="weak match")     # no marker: addresses only
+    where = {}
+    for step in r1["steps"]:
+        splunk = next((o for o in step["observations"] if o["source"] == "splunk"), {})
+        where[step["test_id"]] = ((splunk.get("evidence") or {}).get("index"), splunk.get("field"))
+    if where.get("T-MAIL-005") != (MAIL_INDEX, "msg.header.subject"):
+        fails.append(f"the email was tied through {where.get('T-MAIL-005')}")
+    if where.get("T-WEB-006") != (FIREWALL_INDEX, "resource"):
+        fails.append(f"the web request was tied through {where.get('T-WEB-006')}")
+    if r1["splunk_searches"]["wide"] != 1:
+        fails.append(f"Splunk searches {r1['splunk_searches']}, expected one for the three indexes")
+    teams = {t["team"]: t["steps"] for t in r1["teams"]}
+    if teams != {"Purple team": 3, "SecOps": 1, "NetOps": 2}:
+        fails.append(f"team views {teams}")
+
+    ants.defences.update({"T-MAIL-005": {"proofpoint": "deliver"}, "T-WEB-006": {"checkpoint": "accept"},
+                          "T-NET-004": {"checkpoint": "accept"}})
+    r2 = ants.run(tests, [HOST1], label="both let the test through")
+    for test in tests:
+        want(fails, r2, test, MISSED)
+    reasons = {s["test_id"]: s["reason"] for s in r2["steps"]}
+    if set(reasons.values()) != {"seen_not_flagged"}:
+        fails.append(f"miss reasons {reasons}, expected 'seen_not_flagged' for all three")
+    if len(r2["regressions"]) != 3:
+        fails.append(f"{len(r2['regressions'])} regression(s) reported, expected 3")
+    notes = r2["detection_proposals"].get("no_proposal", [])
+    if len(notes) != 3 or r2["detection_proposals"].get("proposals"):
+        fails.append(f"detection engineer: {r2['detection_proposals']}")
+
+    stranger = dict(HOST1, mailbox="someone.real@example.com")
+    r3 = ants.run(["T-MAIL-005"], [stranger], label="an email to a mailbox that is not on the scope list")
+    want_not_run(fails, r3, "out_of_scope", 1)
+    if r3["steps"]:
+        fails.append("an email step outside the scope list was scored")
+    try:
+        ants.planner.plan(["T-MAIL-005"], [{k: v for k, v in HOST1.items() if k != "mailbox"}])
+        fails.append("an email test was planned for a host with no test mailbox")
+    except ValueError:
+        pass
+    return fails, ("quarantined email and dropped requests read from Splunk as Prevented (the plain "
+                   "connection flagged as weak); when both let the test through: 3 Missed and 3 "
+                   "regressions; an email to a mailbox off the scope list is refused")
+
+
 SCENARIOS = {
+    "gateways": ("Email and firewall tests (Proofpoint and Check Point logs in Splunk)", s_gateways),
     "detection_loop": ("From Missed to Detected: proposal, approval, re-run", s_detection_loop),
     "detection_guards": ("Detection engineer: what it refuses", s_detection_guards),
     "playground": ("Playground: blind run with decoys", s_playground),

@@ -36,6 +36,7 @@ class CouldNotCheckReason(str, Enum):
     SEARCH_FAILED = "search_failed"
     QUERY_REFUSED = "query_refused"
     EXPECTATION_NOT_SUPPORTED = "expectation_not_supported"
+    NO_VERDICT_IN_LOGS = "no_verdict_in_logs"
     COLLECTOR_ERROR = "collector_error"
 
 

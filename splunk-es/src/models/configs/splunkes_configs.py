@@ -83,6 +83,15 @@ class _ConfigLoaderSplunkES(ConfigBaseSettings):
         description="Comma-separated sourcetype(s) the wide search is limited to. "
         "'*' searches every sourcetype of the alerts index (slower).",
     )
+    log_sourcetypes: str = Field(
+        alias="SPLUNKES_LOG_SOURCETYPES",
+        default="cp_log,pps_messagelog",
+        description="Comma-separated sourcetype(s) that are plain logs, not "
+        "alerts: every message or connection is logged, and a field says what "
+        "was done with it (mail gateway, firewall, proxy). A row from one of "
+        "these only counts when it says the step was blocked or flagged. A "
+        "trailing '*' is allowed.",
+    )
     alert_delay: timedelta = Field(
         alias="SPLUNKES_ALERT_DELAY",
         default=timedelta(seconds=30),

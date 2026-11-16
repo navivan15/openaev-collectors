@@ -71,7 +71,7 @@ class SplunkESAlert(BaseModel):
             return v
         raw_data = info.data.get("_raw", {}) if hasattr(info, "data") else {}
         if isinstance(raw_data, dict):
-            for field_name in ["dest", "dest_ip", "destination_ip", "server_ip"]:
+            for field_name in ["dst", "dest", "dest_ip", "destination_ip", "server_ip"]:
                 if raw_data.get(field_name):
                     return raw_data[field_name]
         return v
@@ -122,6 +122,7 @@ class SplunkESResponse(BaseModel):
                 ),
                 dst_ip=(
                     raw_result.get("dst_ip")
+                    or raw_result.get("dst")
                     or raw_result.get("dest")
                     or raw_result.get("dest_ip")
                     or raw_result.get("destination_ip")

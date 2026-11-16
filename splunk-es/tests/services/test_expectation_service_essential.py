@@ -289,7 +289,9 @@ class TestSplunkESExpectationServiceEssential:
 
         assert info["service_name"] == "Splunk ES"  # noqa: S101
         assert info["supports_detection"] is True  # noqa: S101
-        assert info["supports_prevention"] is False  # noqa: S101
+        # Prevention is settled from logs that say what was done (mail
+        # gateway, firewall); see test_gateway_verdicts.py.
+        assert info["supports_prevention"] is True  # noqa: S101
         assert "supported_signatures" in info  # noqa: S101
         assert len(info["supported_signatures"]) == 7  # noqa: S101
 

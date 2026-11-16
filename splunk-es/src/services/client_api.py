@@ -253,9 +253,9 @@ class SplunkESClientAPI:
         """Check that the alerts index exists before trusting an empty search.
 
         A search against a missing (or unreadable) index returns zero rows,
-        which would otherwise be scored as a missed detection. Wildcard or
-        multi-index values are not checked. A positive answer is cached for
-        INDEX_CHECK_TTL_SECONDS.
+        which would otherwise be scored as a missed detection. Several
+        comma-separated indexes are each checked; a wildcard value is not.
+        The answer is cached for INDEX_CHECK_TTL_SECONDS.
 
         Raises:
             SplunkESIndexNotFoundError: Index missing / not visible (HTTP 404).
@@ -263,16 +263,21 @@ class SplunkESClientAPI:
             SplunkESNetworkError: Splunk unreachable.
 
         """
-        index = (self.alerts_index or "").strip()
-        if not index or any(c in index for c in '*, ()="'):
-            return
         now = time.monotonic()
         if (
             self._index_checked_at is not None
             and now - self._index_checked_at < INDEX_CHECK_TTL_SECONDS
         ):
             return
+        # Several indexes may be configured ("main,email"): each one is checked.
+        for index in [i.strip() for i in (self.alerts_index or "").split(",")]:
+            if not index or any(c in index for c in '* ()="'):
+                continue
+            self._check_one_index(index)
+        self._index_checked_at = now
 
+    def _check_one_index(self, index: str) -> None:
+        """Raise unless ``index`` exists and this account may search it."""
         url = f"{self.base_url}/services/data/indexes/{quote(index, safe='')}"
         try:
             response = self.session.get(
@@ -302,7 +307,6 @@ class SplunkESClientAPI:
                     f"Splunk index '{index}' exists, but this account's roles "
                     f"do not allow searching it"
                 )
-            self._index_checked_at = now
             return
         # 403 and others: we cannot verify, so let the search itself decide.
         self.logger.warning(
@@ -840,7 +844,9 @@ class SplunkESClientAPI:
 
             full_query = _safe_formatter.format(
                 self.query_template,
-                alerts_index=self.alerts_index or "*",
+                alerts_index=" OR index=".join(
+                    i.strip() for i in (self.alerts_index or "*").split(",") if i.strip()
+                ),
                 source_ips=source_ips_str,
                 target_ips=target_ips_str,
                 implant_urls=implant_urls_str,

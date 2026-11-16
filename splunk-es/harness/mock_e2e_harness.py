@@ -28,6 +28,7 @@ Every scenario asserts its result and the process exits non-zero on a mismatch.
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -89,7 +90,9 @@ SCENARIOS = {
     # --- original scenarios ---------------------------------------------------
     "detected":          {"outcome": "Detected", "method": "step_marker"},
     "not_detected":      {"outcome": "Missed", "reason": "marker_absent"},
-    "prevention":        {"outcome": "Could not check", "reason": "expectation_not_supported"},
+    # a prevention expectation and only an alert in Splunk: an alert does not say
+    # whether the step was blocked
+    "prevention":        {"outcome": "Could not check", "reason": "no_verdict_in_logs"},
     "auth_fail":         {"outcome": "Could not check", "reason": "auth_failed"},
     "token":             {"outcome": "Detected"},
     "ip_only":           {"outcome": "Detected", "method": "legacy"},
@@ -115,6 +118,13 @@ SCENARIOS = {
     # connection drops on the search itself (index check answered fine)
     "cnc_wide_conn":     {"outcome": "Could not check", "reason": "source_unreachable",
                           "path": "wide", "searches": ["wide"]},
+    # --- gateway logs: mail gateway and firewall logs that say what was done ----
+    "gw_email_blocked":   {"outcome": "Detected", "method": "step_marker"},
+    "gw_email_delivered": {"outcome": "Missed", "reason": "seen_not_flagged"},
+    "gw_alert_allowed":   {"outcome": "Detected", "method": "step_marker"},
+    "gw_fw_prevented":    {"outcome": "Prevented", "method": "step_marker"},
+    "gw_fw_not_blocked":  {"outcome": "Missed", "reason": "not_blocked"},
+    "gw_two_indexes":     {"outcome": "Detected", "method": "step_marker"},
     # a custom SPLUNKES_QUERY_TEMPLATE containing '| delete' is never sent
     "query_refused":     {"outcome": "Could not check", "reason": "query_refused",
                           "searches": []},
@@ -170,8 +180,22 @@ CATALOGUE = [
          "The index check works, then the connection breaks on the search itself."),
         ("cnc_narrow_conn", "Connection drops during the narrow search",
          "The remembered place cannot be reached. The wide search is not attempted and the memory is kept."),
-        ("prevention", "Prevention sent to a detection-only source",
-         "Splunk cannot say whether something was blocked."),
+        ("prevention", "Prevention expectation, and Splunk has only an alert",
+         "An alert does not say whether the step was blocked, so no verdict is written."),
+    ]),
+    ("Email and firewall logs in Splunk", [
+        ("gw_email_blocked", "Mail gateway quarantined the test email",
+         "The gateway's log carries the marker in the subject and says 'quarantine'."),
+        ("gw_email_delivered", "Mail gateway delivered the test email",
+         "The log shows the email went through with nothing raised. Seen is not detected."),
+        ("gw_fw_prevented", "Firewall dropped the marked web request",
+         "A prevention expectation settled by a firewall log that says 'Drop'."),
+        ("gw_fw_not_blocked", "Firewall accepted the marked web request",
+         "The firewall log says 'Accept', so the prevention expectation is missed."),
+        ("gw_alert_allowed", "An alert whose action says allowed",
+         "An alert is a detection even when its action field says the activity was allowed."),
+        ("gw_two_indexes", "Alerts in one index, mail logs in another",
+         "Two indexes are configured; one search covers both."),
     ]),
     ("Query writer", [
         ("batched_markers", "Three steps, one search",
@@ -257,7 +281,8 @@ MARKER_DNS = f"oaev-step-{INJECT_UUID}.sim.invalid"
 
 IP_ONLY_SCENARIOS = ("ip_only", "ipv6", "ip_bleed")
 HOSTNAME_SCENARIOS = ("marker_match", "marker_file", "marker_dns", "marker_absent",
-                      "time_window_miss", "wrong_host")
+                      "time_window_miss", "wrong_host", "gw_alert_allowed")
+PREVENTION_SCENARIOS = ("prevention", "gw_fw_prevented", "gw_fw_not_blocked")
 
 
 def expectation(n=1, kind="DETECTION", include_parent=True, include_host=False,
@@ -338,8 +363,36 @@ def marker_row(host=STEP_HOST, when=None, sourcetype="XmlWinEventLog", **fields)
     return row
 
 
+def gateway_row(sourcetype, index="main", **fields):
+    """A plain log from a mail gateway or a firewall: it names no endpoint host,
+    and a field says what was done with the message or the connection."""
+    row = {"_time": ALERT_TIME, "index": index, "sourcetype": sourcetype}
+    row.update(fields)
+    return row
+
+
+MARKER_SUBJECT = f"Invoice overdue oaev-step-{INJECT_UUID}"
+MARKER_URL = f"http://{DST_IP}/oaev-step-{INJECT_UUID}"
+
+
 def single_step_rows(kind, call_no):
     """Rows for the single-step scenarios."""
+    if SCENARIO == "gw_email_blocked":
+        return [gateway_row("pps_messagelog", **{"msg.header.subject": MARKER_SUBJECT,
+                                                 "final_action": "quarantine"})]
+    if SCENARIO == "gw_email_delivered":
+        return [gateway_row("pps_messagelog", **{"msg.header.subject": MARKER_SUBJECT,
+                                                 "final_action": "delivered"})]
+    if SCENARIO == "gw_alert_allowed":
+        # An alert (not a plain log) whose action says "allowed" is still a detection.
+        return [marker_row(process=marker_cmd(), action="allowed")]
+    if SCENARIO == "gw_fw_prevented":
+        return [gateway_row("cp_log", src=SRC_IP, dst=DST_IP, resource=MARKER_URL, action="Drop")]
+    if SCENARIO == "gw_fw_not_blocked":
+        return [gateway_row("cp_log", src=SRC_IP, dst=DST_IP, resource=MARKER_URL, action="Accept")]
+    if SCENARIO == "gw_two_indexes":
+        return [gateway_row("pps_messagelog", index="email",
+                            **{"msg.header.subject": MARKER_SUBJECT, "final_action": "quarantine"})]
     if SCENARIO == "late_alert":
         return [] if call_no < 2 else [splunk_alert_row(match=True)]
     if SCENARIO == "ip_bleed":
@@ -467,6 +520,11 @@ class SplunkHandler(BaseHTTPRequestHandler):
         for row in results:   # every real row has these; default them for old fixtures
             row.setdefault("index", "main")
             row.setdefault("sourcetype", "mock:events")
+        # A real Splunk returns only the fields the search asks for with '| table'.
+        table = re.search(r"\| table (.+?)(?: \||$)", spl)
+        if table:
+            wanted = {f.strip().strip('"') for f in table.group(1).split(",")}
+            results = [{k: v for k, v in row.items() if k in wanted} for row in results]
         payload = {"results": results,
                    "fields": [{"name": k} for k in results[0].keys()] if results else []}
         self._send_json(200, payload)
@@ -665,6 +723,9 @@ def describe(run):
 
 WANT_VERDICT = {"Detected": ("Detected", True), "Missed": ("Not Detected", False),
                 "Could not check": None}
+# The same for a prevention expectation.
+WANT_PREVENTION_VERDICT = {"Prevented": ("Prevented", True), "Missed": ("Not Prevented", False),
+                           "Could not check": None}
 
 
 def check_result(run, exp, outcome, reason=None, method=None, path=None):
@@ -682,8 +743,11 @@ def check_result(run, exp, outcome, reason=None, method=None, path=None):
         fails.append(f"match_method={r.match_method!r}, expected {method!r}")
     if path is not None and r.search_path != path:
         fails.append(f"search_path={r.search_path!r}, expected {path!r}")
-    if run["verdicts"].get(eid) != WANT_VERDICT[outcome]:
-        fails.append(f"verdict={run['verdicts'].get(eid)!r}, expected {WANT_VERDICT[outcome]!r}")
+    table = WANT_PREVENTION_VERDICT if exp["inject_expectation_type"] == "PREVENTION" else WANT_VERDICT
+    if outcome not in table:
+        fails.append(f"outcome {outcome!r} is not possible for a {exp['inject_expectation_type']} expectation")
+    elif run["verdicts"].get(eid) != table[outcome]:
+        fails.append(f"verdict={run['verdicts'].get(eid)!r}, expected {table[outcome]!r}")
     return fails
 
 
@@ -720,6 +784,8 @@ def run_single():
     if SCENARIO == "query_refused":
         overrides["SPLUNKES_QUERY_TEMPLATE"] = (
             "index={alerts_index} sourcetype=* earliest={start_date} latest={end_date} | delete")
+    if SCENARIO == "gw_two_indexes":       # alerts in one index, mail gateway logs in another
+        overrides["SPLUNKES_ALERTS_INDEX"] = "main, email"
     set_env(**overrides)
     if SCENARIO == "token":                # bearer token instead of basic credentials
         os.environ.pop("SPLUNKES_USERNAME", None)
@@ -728,7 +794,7 @@ def run_single():
     STATE["drop_search"] = SCENARIO == "cnc_wide_conn"
 
     exp = expectation(
-        kind="PREVENTION" if SCENARIO == "prevention" else "DETECTION",
+        kind="PREVENTION" if SCENARIO in PREVENTION_SCENARIOS else "DETECTION",
         include_parent=SCENARIO not in IP_ONLY_SCENARIOS,
         include_host=SCENARIO in HOSTNAME_SCENARIOS,
     )
@@ -738,6 +804,8 @@ def run_single():
                          spec.get("method"), spec.get("path"))
     if "searches" in spec:
         fails += expect_searches(run, spec["searches"])
+    if SCENARIO == "gw_two_indexes" and "index=main OR index=email " not in (run["spl"] or [""])[0]:
+        fails.append(f"the search does not name both indexes: {(run['spl'] or [''])[0][:80]}")
     r = run["results"].get(exp["inject_expectation_id"])
     note = (f"{r.outcome.value} reason={r.outcome_reason} method={r.match_method} "
             f"searches={len(run['searches'])}") if r else "no result"

@@ -19,7 +19,8 @@ from .models import COULD_NOT_CHECK, DETECTED, MISSED, NOT_RUN, PREVENTED, Step,
 
 SCORED = (DETECTED, PREVENTED, MISSED)
 # Which steps each team looks at. Purple team sees the whole chain.
-TEAM_PROFILES = {"Purple team": None, "SecOps": "endpoint", "NetOps": "network"}
+# Which kinds of test each team owns. Email tests sit with SecOps.
+TEAM_PROFILES = {"Purple team": None, "SecOps": ("endpoint", "email"), "NetOps": ("network",)}
 
 
 def team_views(report: dict[str, Any], category_of_test: dict[str, str]) -> list[dict[str, Any]]:
@@ -27,7 +28,7 @@ def team_views(report: dict[str, Any], category_of_test: dict[str, str]) -> list
     views = []
     for team, category in TEAM_PROFILES.items():
         steps = [s for s in report["steps"]
-                 if category is None or category_of_test.get(s["test_id"]) == category]
+                 if category is None or category_of_test.get(s["test_id"]) in category]
         seen = sum(1 for s in steps if s["outcome"] in (DETECTED, PREVENTED))
         scored = sum(1 for s in steps if s["outcome"] in SCORED)
         views.append({

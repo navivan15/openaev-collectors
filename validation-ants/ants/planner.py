@@ -20,6 +20,9 @@ from .models import Plan, Step
 CATALOGUE_PATH = Path(__file__).with_name("catalogue.json")
 
 
+MAILBOX_RE = re.compile(r"^[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,190}$")
+
+
 class PlanningError(ValueError):
     """The request cannot be turned into a plan."""
 
@@ -93,6 +96,12 @@ class Planner:
                     raise PlanningError(f"Unknown test '{test_id}'")
                 action = self.actions[test["action"]]
                 marker = str(uuid.uuid4())
+                mailbox = str(host.get("mailbox") or "")
+                if "{mailbox}" in action["command"] and not MAILBOX_RE.match(mailbox):
+                    raise PlanningError(
+                        f"Test {test_id} sends an email, and '{host['name']}' has no "
+                        f"test mailbox to send it to"
+                    )
                 steps.append(
                     Step(
                         id=marker,
@@ -102,13 +111,14 @@ class Planner:
                         technique=test["technique"],
                         action=test["action"],
                         command=action["command"].format(
-                            marker=marker, target_ip=host["target_ip"]
+                            marker=marker, target_ip=host["target_ip"], mailbox=mailbox
                         ),
                         host=host["name"],
                         source_ip=host["source_ip"],
                         target_ip=host["target_ip"],
                         expect=dict(test["expect"]),
                         agentless=bool(action.get("agentless")),
+                        channel=str(action.get("category") or "endpoint"),
                     )
                 )
         return Plan(run_id=run_id, created=datetime.now(timezone.utc), steps=steps)

@@ -18,6 +18,8 @@ from .models import Step, implant_name
 
 FMT = "%Y-%m-%dT%H:%M:%S"
 RAW_INDEX = "telemetry"   # plain endpoint logs; alerts are in the collector's alerts index
+MAIL_INDEX = "email"      # mail gateway logs, forwarded to Splunk
+FIREWALL_INDEX = "netfw"  # firewall logs, forwarded to Splunk
 # Falcon pattern_disposition bits (see crowdstrike/pattern_disposition.py)
 DISPOSITION_DETECT_ONLY = 0
 DISPOSITION_PROCESS_BLOCKED = 2048
@@ -68,7 +70,7 @@ class SimulatedAgent:
 
         # The plain endpoint log. It exists whether or not any rule fires, it is not
         # an alert, and it lives in its own index, away from the alerts.
-        if not step.agentless:
+        if not step.agentless and step.channel != "email":
             self.telemetry.splunk_rows.append({
                 "_time": (step.start + timedelta(seconds=5)).strftime(FMT),
                 "index": RAW_INDEX, "sourcetype": "XmlWinEventLog:Sysmon", "EventCode": "1",
@@ -101,6 +103,33 @@ class SimulatedAgent:
                     "dest_host": fqdn, "event.CompositeId": composite,
                     "rule_name": name, "process": command, "parent_process_name": parent,
                 })
+
+        # Mail gateway (Proofpoint): logs every message and what it did with it.
+        mail = profile.get("proofpoint")
+        if mail:
+            subject = f"OAEV test oaev-step-{step.id}" if marked else "OAEV test"
+            row = {"_time": alert_time, "index": MAIL_INDEX, "sourcetype": "pps_messagelog",
+                   "msg.header.subject": subject,
+                   "final_action": {"quarantine": "quarantine", "deliver": "delivered"}[mail]}
+            if mail == "quarantine":
+                row["rule_name"] = "Link to an unknown domain"
+            self.telemetry.splunk_rows.append(row)
+
+        # Firewall (Check Point): logs the connection and its action. A marked web
+        # request leaves its address in the log; a plain connection leaves only IPs.
+        firewall = profile.get("checkpoint")
+        if firewall:
+            row = {"_time": alert_time, "index": FIREWALL_INDEX, "sourcetype": "cp_log",
+                   "src": step.source_ip, "dst": step.target_ip, "origin": "cp-gw-lab",
+                   "action": {"drop": "Drop", "accept": "Accept"}[firewall]}
+            if step.action == "web_request_marker" and marked:
+                row.update(product="URL Filtering",
+                           resource=f"http://{step.target_ip}/oaev-step-{step.id}")
+            else:
+                row.update(product="Firewall", service="445")
+            if firewall == "drop":
+                row["rule_name"] = "Block test destinations"
+            self.telemetry.splunk_rows.append(row)
 
         rule = profile.get("splunk_rule")
         if rule:

@@ -216,6 +216,44 @@ not check into Missed); it reported wrong calls for both and none once they were
 The playground is still a simulation: the "defences" are the sandbox's own synthetic telemetry. It measures whether
 the ants read that telemetry correctly, not whether your real tools detect anything.
 
+## Email and firewall tests
+
+Two test types whose verdict comes from another tool's own logs, forwarded to Splunk. No new reader is needed: the
+Splunk observer reads them.
+
+| Test | What it does | Marker | Tool whose log decides |
+|---|---|---|---|
+| `T-MAIL-005` (`email_marker`, T1566.002) | One harmless, marked email to a dedicated test mailbox. Its only link points at a reserved address that cannot resolve. | In the subject | Mail gateway (Proofpoint) |
+| `T-WEB-006` (`web_request_marker`, T1071.001) | One marked web request to an in-scope test server, through the firewall. | In the web address | Firewall (Check Point) |
+| `T-NET-004` (`tcp_probe`, already there) | One plain connection. | None | Firewall, matched on addresses only |
+
+How the log is read:
+
+| The log says | Outcome |
+|---|---|
+| quarantined, blocked, dropped, rejected | `Prevented` |
+| flagged but let through | `Detected`, with a "prevention gap" finding when the test expects a block |
+| delivered, accepted | `Missed` (`seen_not_flagged`): the step is in the logs and nothing stopped or flagged it |
+| nothing found | `Missed` |
+
+- **Test mailboxes only.** The gatekeeper's scope has a list of test mailboxes (`allowed_mailboxes`). An email step
+  is signed and run only when its command is exactly the allow-listed test email to one of them. Anything else is
+  refused as out of scope, and a host with no test mailbox cannot be planned for an email test.
+- **No real email is sent here.** In the sandbox the simulated agent only writes the log the mail gateway or the
+  firewall would have written. Sending the real test email is for the endpoint stage.
+- **A plain connection is still a weak match.** It has no marker, so any firewall log for the same address pair in
+  the time window is read as its result. The finding says so and asks a person to confirm. The marked web request
+  does not have this problem.
+- **After a miss** the detection engineer proposes nothing for these two: what stops an email or a web request is
+  the gateway's or the firewall's policy, which a person changes.
+- The blind playground does not draw these two test types yet.
+- Field and sourcetype names (`pps_messagelog`, `msg.header.subject`, `final_action`, `cp_log`, `resource`,
+  `action`) are the add-ons' usual ones and are unverified against real Proofpoint or Check Point data.
+
+```shell
+splunk-es/.venv/Scripts/python validation-ants/sandbox.py gateways
+```
+
 ## Lab Splunk: the same checks against a real Splunk Enterprise
 
 The mock Splunk is something I wrote, so it can only prove what I assumed. `lab_splunk.py` repeats the important
@@ -233,7 +271,7 @@ splunk-es/.venv/Scripts/python validation-ants/lab_splunk.py reader     # one gr
   repository (`OAEV_LAB_ENV`, default `~/.oaev-lab/splunk-lab.env`) and are never printed.
 - Falcon stays a mock. Only Splunk is real.
 
-Result on Splunk Enterprise 10.6.1.1 (2026-11-15), 30 checks:
+Result on Splunk Enterprise 10.6.1.1 (2026-11-15), 36 checks:
 
 | Group | What was checked | Result |
 |---|---|---|
@@ -245,8 +283,14 @@ Result on Splunk Enterprise 10.6.1.1 (2026-11-15), 30 checks:
 | reader | The same through an account whose only capability is `search`, limited to two indexes | Works, and that account cannot change Splunk (creating an index answers 403). |
 | reader | An index that exists, but that the account's role may not search | **This was a hole.** The index check passed and the search returned nothing, which would have been scored `Missed`. The collector now reads the account's own roles and reports `Could not check` instead. |
 
+| gateways | A quarantined test email, a dropped marked web request and a dropped plain connection, each log in its own index, read with the read-only account | All three `Prevented`, in one search over three indexes. The email is tied through the nested `msg.header.subject`, the web request through `resource`; the plain connection is flagged as a weak match. |
+| gateways | The same three, delivered and accepted | All three `Missed` (`seen_not_flagged`). |
+| gateways | First attempt | **This was a hole.** Every blocked step read as let through: the search did not ask Splunk for the `action` fields, and Splunk returns only the fields a search asks for. The mock returned whole rows, so it could not show this. The search now asks for them, and both mocks now return only the fields asked for. |
+
 Also learned: Splunk gives the event time with milliseconds and a UTC offset (the collector already read that
-correctly; the mock now answers the same way).
+correctly; the mock now answers the same way). A real Splunk also keeps earlier runs' logs, so a plain connection
+test picked up the firewall log of a different test on the same address pair a few minutes before. That is the weak
+match described above; the lab groups now use separate addresses.
 
 What the lab does not show: your real sourcetypes and field names (they depend on the add-ons installed), a real
 Falcon forwarding its alerts, search speed on real volumes, or a search head cluster. The lab is one small Splunk

@@ -40,6 +40,7 @@ class Step:
     target_ip: str
     expect: dict[str, str] = _field(default_factory=dict)  # source -> detection|prevention
     agentless: bool = False  # no agent on the host, so no marker in telemetry
+    channel: str = "endpoint"  # endpoint | network | email: where the step shows up
     signature: str | None = None  # set by the gatekeeper
     signed_by: str | None = None
     start: datetime | None = None  # set when the agent runs it

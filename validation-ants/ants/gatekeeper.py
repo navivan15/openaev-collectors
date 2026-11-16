@@ -46,6 +46,7 @@ from typing import Any, Callable, Iterator
 
 from .models import Plan, Step
 
+_MAILBOX_RE = re.compile(r"^[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,190}$")
 _HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9\-.]{0,251}[a-z0-9])?$")
 
 
@@ -87,6 +88,11 @@ class Gatekeeper:
         self.allowed_targets = {str(ipaddress.ip_address(t))
                                 for t in scope.get("allowed_targets", [])}
         self.allowed_actions = set(scope.get("allowed_actions", []))
+        # Test mailboxes an email step may be sent to. Nothing else gets mail.
+        self.allowed_mailboxes = [str(m) for m in scope.get("allowed_mailboxes", [])]
+        for mailbox in self.allowed_mailboxes:
+            if not _MAILBOX_RE.match(mailbox):
+                raise ValueError(f"'{mailbox}' on the scope list is not a mailbox address")
         self.not_before = datetime.fromisoformat(scope["not_before"])
         self.not_after = datetime.fromisoformat(scope["not_after"])
         if self.not_before.tzinfo is None or self.not_after.tzinfo is None:
@@ -253,8 +259,18 @@ class Gatekeeper:
                           f"target address '{step.target_ip}' is not on the scope list")
         if step.action not in self.allowed_actions or step.action not in self.actions:
             raise Refused("action_not_allowed", f"action '{step.action}' is not allowed")
-        expected = self.actions[step.action]["command"].format(
-            marker=step.id, target_ip=target)
+        template = self.actions[step.action]["command"]
+        if "{mailbox}" in template:
+            # An email step: the command must be exactly the allow-listed test
+            # email, addressed to a mailbox on the scope list.
+            if step.command not in [
+                    template.format(marker=step.id, target_ip=target, mailbox=m)
+                    for m in self.allowed_mailboxes]:
+                raise Refused("out_of_scope",
+                              "the email is not the allow-listed test email to a test "
+                              "mailbox on the scope list")
+            return
+        expected = template.format(marker=step.id, target_ip=target)
         if step.command != expected:
             raise Refused("command_not_allowed",
                           "the command is not what the allow-listed action produces")
