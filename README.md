@@ -7,6 +7,20 @@
 The following repository is used to store the OpenAEV collectors for the platform integration with other tools and
 applications. To know how to enable collectors on OpenAEV, please read the [dedicated documentation](https://docs.openaev.io/latest/deployment/ecosystem/collectors).
 
+## In this fork: validation ants
+
+This private fork adds a detection-validation layer on top of the collectors, on the branch `work`:
+
+- **`validation-ants/`**: the "ants". Small rule-based workers that plan harmless, marked test steps, gate them,
+  read Splunk Enterprise and CrowdStrike Falcon, tie alerts to steps, propose detections for what was missed, and
+  report. Everything runs on mocks.
+- **`splunk-es/`**: the Splunk collector, extended with step-marker matching, four outcomes, a location memory,
+  checked searches, and a local demo page (attack library, sandbox job board, ant map).
+
+Start with [validation-ants/docs/STATUS.md](validation-ants/docs/STATUS.md) for where the work stands and
+[validation-ants/docs/SETUP.md](validation-ants/docs/SETUP.md) to run it. The full list of documents is in
+[validation-ants/README.md](validation-ants/README.md).
+
 ## Collectors list and statuses
 
 This repository is used to host collectors that are supported by the core development team of OpenAEV.

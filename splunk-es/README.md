@@ -357,7 +357,8 @@ collector's own Python environment:
 python harness/demo_server.py          # then open http://127.0.0.1:8140
 ```
 
-The page has three views.
+The page has three views. A guide to it, with screenshots, is in
+[`validation-ants/docs/FRONT-END.md`](../validation-ants/docs/FRONT-END.md).
 
 - **Sandbox.** A job board. A job is one scenario from the catalogue: the real collector code against the mock, in its
   own process. Up to four jobs run at the same time, each with its own mock ports (`HARNESS_SPLUNK_PORT`,

@@ -6,15 +6,36 @@ plan benign steps, gate them, run them, read each security tool, tie alerts to s
 Everything here runs **on mocks only**. The endpoint agent is simulated and executes nothing; Splunk and CrowdStrike
 Falcon are mock servers. It is for authorised testing of systems the organisation owns.
 
+**The ants are code with fixed rules, not AI models.** Their code is in `ants/`. One ant, the drafter, can ask a
+model; today that slot holds a scripted stand-in.
+
+## Documentation
+
+| Document | What it answers |
+|---|---|
+| [docs/STATUS.md](docs/STATUS.md) | Where the work stands, what is proven and what is not, how to continue |
+| [docs/SETUP.md](docs/SETUP.md) | From a fresh copy to everything running |
+| [docs/FLOW.md](docs/FLOW.md) | One run, start to end |
+| [docs/SCENARIOS.md](docs/SCENARIOS.md) | Every check, what it shows, how to run it |
+| [docs/ANTS.md](docs/ANTS.md) | Each ant, its code file, and a map of the code |
+| [docs/FRONT-END.md](docs/FRONT-END.md) | The demo page: attack library, sandbox, ant map |
+| [docs/COPILOT.md](docs/COPILOT.md) | Where a model connects, and where real systems connect |
+
+This README is the reference: what each ant does in depth, with every known limit.
+
 ```
 intel -> scenario builder -> planner -> gatekeeper -> agent
       -> Splunk observer + Falcon observer -> analyst -> matcher -> detection engineer -> reporter
+
+scenario builder -> (a technique with no action) -> librarian -> drafter -> a person approves -> planner
 ```
 
 | Ant | File | What it does |
 |---|---|---|
 | Intel | `ants/intel.py` | Reads a threat scenario from OpenCTI as a STIX bundle and lists its ATT&CK techniques in tactic order. Read-only. |
 | Scenario builder | `ants/scenario_builder.py` | Maps each technique to an action on the allow-list and writes a draft scenario with a coverage table. A person approves it before it can be planned. |
+| Librarian | `ants/librarian.py` | For a technique with no action, drafts one from a harmless public test read from a local file. Fixed rules decide what is harmless. A person approves each draft. |
+| Drafter | `ants/drafter.py` | Called only when the librarian found nothing. Asks a model for one read-only command; the answer goes through the librarian's rules. The only ant that uses a model. |
 | Planner | `ants/planner.py`, `ants/catalogue.json` | Turns catalogue tests into steps. Each step gets a new marker (a UUID) and a command taken from the action allow-list. It cannot invent an action. |
 | Gatekeeper | `ants/gatekeeper.py` | Decides whether a step may run, and keeps the audit log. See below. |
 | Agent | `ants/agent_sim.py` | Sandbox stand-in for OpenAEV's endpoint agent. Asks the gatekeeper, then writes the synthetic telemetry the configured defences would produce. Runs no command. |
@@ -49,7 +70,7 @@ refused is `Not run`; it is listed and never scored.
    test. The report adds the coverage table and the same run scored per team: purple team (the whole chain), SecOps
    (endpoint steps), NetOps (network steps).
 
-The library today has 13 actions covering 13 techniques. The sandbox's OpenCTI is a mock serving one synthetic,
+The library today has 15 actions covering 15 techniques. The sandbox's OpenCTI is a mock serving one synthetic,
 illustrative bundle; it is not an authoritative profile of any named group. The GraphQL query used to fetch a report
 has not been checked against a real OpenCTI. OpenAEV itself can also turn an OpenCTI bundle into a scenario
 (`openaev-api`, STIX API); these ants do not use that path yet.
@@ -121,7 +142,7 @@ overwrite the history.
 Use the `splunk-es` virtualenv (it has `pyoaev` and `requests`):
 
 ```shell
-splunk-es/.venv/Scripts/python validation-ants/sandbox.py all        # 23 scenarios, pass/fail table
+splunk-es/.venv/Scripts/python validation-ants/sandbox.py all        # 28 scenarios, pass/fail table
 splunk-es/.venv/Scripts/python validation-ants/sandbox.py full_run   # one scenario with details
 ```
 
@@ -305,7 +326,7 @@ librarian; the drafter (below) is called for those.
 
 ```shell
 splunk-es/.venv/Scripts/python validation-ants/sandbox.py librarian          # a scenario with gaps, before and after
-splunk-es/.venv/Scripts/python validation-ants/sandbox.py librarian_rules    # 40 commands the rules allow or refuse
+splunk-es/.venv/Scripts/python validation-ants/sandbox.py librarian_rules    # 49 commands the rules allow or refuse
 splunk-es/.venv/Scripts/python validation-ants/sandbox.py survey FILE        # how many gaps a library file would close
 ```
 
