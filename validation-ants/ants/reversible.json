@@ -1,0 +1,99 @@
+{
+  "version": 1,
+  "about": "Change-and-undo actions. Each one makes ONE small change that imitates an attack technique, then removes it and checks that it is gone. They are off unless a run switches them on, and the gatekeeper only lets them run on machines listed as dedicated test machines. Every artifact is named with the step marker. Anything an artifact would launch is exactly the harmless payload below. No administrator rights, no network, no passwords, nothing in anyone's own folders. reversible.py checks every entry against these rules when the file is loaded. The commands have NOT been run on a real Windows machine yet: they are written from how the built-in tools work.",
+  "payload": "cmd.exe /c echo oaev-step-{marker}",
+  "techniques": {
+    "T1053.005": {"name": "Scheduled Task/Job: Scheduled Task", "tactic": "persistence"},
+    "T1547.001": {"name": "Boot or Logon Autostart Execution: Registry Run Keys", "tactic": "persistence"},
+    "T1197": {"name": "BITS Jobs", "tactic": "persistence"},
+    "T1112": {"name": "Modify Registry", "tactic": "defense-evasion"},
+    "T1564.001": {"name": "Hide Artifacts: Hidden Files and Directories", "tactic": "defense-evasion"},
+    "T1564.004": {"name": "Hide Artifacts: NTFS File Attributes", "tactic": "defense-evasion"},
+    "T1036.003": {"name": "Masquerading: Rename Legitimate Utilities", "tactic": "defense-evasion"},
+    "T1140": {"name": "Deobfuscate/Decode Files or Information", "tactic": "defense-evasion"},
+    "T1059.005": {"name": "Command and Scripting Interpreter: Visual Basic", "tactic": "execution"}
+  },
+  "actions": {
+    "task_create_marked": {
+      "description": "Create a scheduled task named with the step marker. It is set for a date far in the future, would only print the marker, and is deleted right away.",
+      "changes": "One scheduled task for the current user. It never runs.",
+      "command": "cmd.exe /c schtasks /create /tn oaev-step-{marker} /tr \"cmd.exe /c echo oaev-step-{marker}\" /sc once /st 23:59 /sd 01/01/2099 /f",
+      "cleanup": "cmd.exe /c schtasks /delete /tn oaev-step-{marker} /f",
+      "verify": "cmd.exe /c schtasks /query /tn oaev-step-{marker}",
+      "techniques": ["T1053.005"], "category": "endpoint", "fidelity": "full", "reversible": true,
+      "expect": {"falcon": "detection", "splunk": "detection"}
+    },
+    "run_key_marked": {
+      "description": "Add a logon autostart value named with the step marker. It would only print the marker, and is removed right away.",
+      "changes": "One value under the current user's Run key.",
+      "command": "cmd.exe /c reg add HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v oaev-step-{marker} /t REG_SZ /d \"cmd.exe /c echo oaev-step-{marker}\" /f",
+      "cleanup": "cmd.exe /c reg delete HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v oaev-step-{marker} /f",
+      "verify": "cmd.exe /c reg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run /v oaev-step-{marker}",
+      "techniques": ["T1547.001"], "category": "endpoint", "fidelity": "full", "reversible": true,
+      "expect": {"falcon": "detection", "splunk": "detection"}
+    },
+    "bits_job_marked": {
+      "description": "Create an empty background transfer job named with the step marker. It transfers nothing, and is cancelled right away.",
+      "changes": "One empty transfer job for the current user.",
+      "command": "cmd.exe /c bitsadmin /create oaev-step-{marker}",
+      "cleanup": "cmd.exe /c bitsadmin /cancel oaev-step-{marker}",
+      "verify": "cmd.exe /c bitsadmin /info oaev-step-{marker}",
+      "techniques": ["T1197"], "category": "endpoint", "fidelity": "partial", "reversible": true,
+      "expect": {"splunk": "detection"}
+    },
+    "registry_value_marked": {
+      "description": "Write one value named with the step marker under a test key of the current user, then remove it.",
+      "changes": "One value under HKCU\\Software\\OAEV-Test.",
+      "command": "cmd.exe /c reg add HKCU\\Software\\OAEV-Test /v oaev-step-{marker} /t REG_SZ /d 1 /f",
+      "cleanup": "cmd.exe /c reg delete HKCU\\Software\\OAEV-Test /v oaev-step-{marker} /f",
+      "verify": "cmd.exe /c reg query HKCU\\Software\\OAEV-Test /v oaev-step-{marker}",
+      "techniques": ["T1112"], "category": "endpoint", "fidelity": "partial", "reversible": true,
+      "expect": {"splunk": "detection"}
+    },
+    "hidden_file_marked": {
+      "description": "Create an empty file named with the step marker in the temp folder, mark it hidden, then unhide and delete it.",
+      "changes": "One empty hidden file in the temp folder.",
+      "command": "cmd.exe /c type nul > %TEMP%\\oaev-step-{marker}.txt & attrib +h %TEMP%\\oaev-step-{marker}.txt",
+      "cleanup": "cmd.exe /c attrib -h %TEMP%\\oaev-step-{marker}.txt & del %TEMP%\\oaev-step-{marker}.txt",
+      "verify": "cmd.exe /c dir /a %TEMP%\\oaev-step-{marker}.txt",
+      "techniques": ["T1564.001"], "category": "endpoint", "fidelity": "full", "reversible": true,
+      "expect": {"splunk": "detection"}
+    },
+    "data_stream_marked": {
+      "description": "Create an empty file named with the step marker in the temp folder, write the marker into a second data stream of it, then delete the file.",
+      "changes": "One empty file with a second data stream in the temp folder.",
+      "command": "cmd.exe /c type nul > %TEMP%\\oaev-step-{marker}.txt & echo oaev-step-{marker} > %TEMP%\\oaev-step-{marker}.txt:note",
+      "cleanup": "cmd.exe /c del %TEMP%\\oaev-step-{marker}.txt",
+      "verify": "cmd.exe /c dir /a %TEMP%\\oaev-step-{marker}.txt",
+      "techniques": ["T1564.004"], "category": "endpoint", "fidelity": "full", "reversible": true,
+      "expect": {"splunk": "detection"}
+    },
+    "renamed_tool_marked": {
+      "description": "Copy the built-in whoami tool to the temp folder under a name with the step marker, run the copy, then delete it.",
+      "changes": "One copy of a built-in read-only tool in the temp folder.",
+      "command": "cmd.exe /c copy %SystemRoot%\\System32\\whoami.exe %TEMP%\\oaev-step-{marker}.exe & %TEMP%\\oaev-step-{marker}.exe",
+      "cleanup": "cmd.exe /c del %TEMP%\\oaev-step-{marker}.exe",
+      "verify": "cmd.exe /c dir /a %TEMP%\\oaev-step-{marker}.exe",
+      "techniques": ["T1036.003"], "category": "endpoint", "fidelity": "full", "reversible": true,
+      "expect": {"falcon": "detection", "splunk": "detection"}
+    },
+    "decode_marked": {
+      "description": "Write a few characters of harmless encoded text to a file named with the step marker, decode it with the built-in certificate tool, then delete both files.",
+      "changes": "Two small text files in the temp folder.",
+      "command": "cmd.exe /c echo b2Fldi10ZXN0 > %TEMP%\\oaev-step-{marker}.b64 & certutil -decode %TEMP%\\oaev-step-{marker}.b64 %TEMP%\\oaev-step-{marker}.txt",
+      "cleanup": "cmd.exe /c del %TEMP%\\oaev-step-{marker}.b64 & del %TEMP%\\oaev-step-{marker}.txt",
+      "verify": "cmd.exe /c dir /a %TEMP%\\oaev-step-{marker}.*",
+      "techniques": ["T1140"], "category": "endpoint", "fidelity": "full", "reversible": true,
+      "expect": {"falcon": "detection", "splunk": "detection"}
+    },
+    "script_marked": {
+      "description": "Write a one-line script that only prints the step marker to a file named with the marker, run it with the built-in script host, then delete it.",
+      "changes": "One small script file in the temp folder.",
+      "command": "cmd.exe /c echo WScript.Echo \"oaev-step-{marker}\" > %TEMP%\\oaev-step-{marker}.vbs & cscript //nologo %TEMP%\\oaev-step-{marker}.vbs",
+      "cleanup": "cmd.exe /c del %TEMP%\\oaev-step-{marker}.vbs",
+      "verify": "cmd.exe /c dir /a %TEMP%\\oaev-step-{marker}.vbs",
+      "techniques": ["T1059.005"], "category": "endpoint", "fidelity": "full", "reversible": true,
+      "expect": {"falcon": "detection", "splunk": "detection"}
+    }
+  }
+}

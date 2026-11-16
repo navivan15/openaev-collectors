@@ -28,9 +28,21 @@ class PlanningError(ValueError):
 
 
 class Planner:
-    def __init__(self, catalogue_path: Path | str = CATALOGUE_PATH) -> None:
+    def __init__(self, catalogue_path: Path | str = CATALOGUE_PATH, reversible: bool = False) -> None:
         data = json.loads(Path(catalogue_path).read_text(encoding="utf-8"))
         self.actions: dict[str, dict[str, Any]] = data["actions"]
+        self.technique_names: dict[str, Any] = dict(data.get("techniques", {}))
+        if reversible:
+            # Change-and-undo actions are off unless a run switches them on. Loading
+            # them checks every one against the rules in reversible.py.
+            from .reversible import load_reversible
+
+            extra, names = load_reversible()
+            for action_id in extra:
+                if action_id in self.actions:
+                    raise PlanningError(f"Action '{action_id}' is defined twice")
+            self.actions.update(extra)
+            self.technique_names.update(names)
         self.not_simulated: dict[str, str] = data.get("not_simulated", {})
         self.tests: dict[str, dict[str, Any]] = {t["id"]: t for t in data["tests"]}
         for test in self.tests.values():
@@ -143,6 +155,11 @@ class Planner:
                         expect=dict(test["expect"]),
                         agentless=bool(action.get("agentless")),
                         channel=str(action.get("category") or "endpoint"),
+                        reversible=bool(action.get("reversible")),
+                        cleanup=(action["cleanup"].format(marker=marker)
+                                 if action.get("reversible") else None),
+                        verify=(action["verify"].format(marker=marker)
+                                if action.get("reversible") else None),
                     )
                 )
         return Plan(run_id=run_id, created=datetime.now(timezone.utc), steps=steps)

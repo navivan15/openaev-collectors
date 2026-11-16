@@ -57,6 +57,22 @@ class SimulatedAgent:
         profile = (self.defences[step.test_id] if step.test_id in self.defences
                    else self.defences.get("action:" + step.action, {}))
         self._emit(step, profile)
+        if step.reversible:
+            # The undo and its check are commands too, so they leave endpoint logs. Then the
+            # result goes to the gatekeeper: an undo that cannot be confirmed blocks the machine.
+            assert step.start is not None
+            confirmed = not profile.get("cleanup_fails")
+            fqdn = f"{step.host.lower()}.lab.local"
+            for offset, command in ((8, step.cleanup), (10, step.verify)):
+                self.telemetry.splunk_rows.append({
+                    "_time": (step.start + timedelta(seconds=offset)).strftime(FMT),
+                    "index": RAW_INDEX, "sourcetype": "XmlWinEventLog:Sysmon", "EventCode": "1",
+                    "dest_host": fqdn, "process": command,
+                    "parent_process_name": implant_name(step.id)})
+            self.gatekeeper.record_cleanup(
+                step, confirmed,
+                "the check found nothing left" if confirmed else "the check still found the artifact")
+            entry = dict(entry, cleanup_ok=confirmed)
         return entry
 
     def _emit(self, step: Step, profile: dict[str, Any]) -> None:

@@ -41,6 +41,9 @@ class Step:
     expect: dict[str, str] = _field(default_factory=dict)  # source -> detection|prevention
     agentless: bool = False  # no agent on the host, so no marker in telemetry
     channel: str = "endpoint"  # endpoint | network | email: where the step shows up
+    reversible: bool = False  # makes one small change, then undoes it and checks
+    cleanup: str | None = None  # the undo
+    verify: str | None = None  # the check that the undo worked (it must find nothing)
     signature: str | None = None  # set by the gatekeeper
     signed_by: str | None = None
     start: datetime | None = None  # set when the agent runs it
@@ -51,7 +54,7 @@ class Step:
         return {
             k: getattr(self, k)
             for k in ("id", "run_id", "test_id", "action", "command", "host",
-                      "source_ip", "target_ip")
+                      "source_ip", "target_ip", "cleanup", "verify")
         }
 
     def to_dict(self) -> dict[str, Any]:

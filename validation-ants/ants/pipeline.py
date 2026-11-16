@@ -51,13 +51,24 @@ def run_validation(
     # 3. Agent: every step asks the gatekeeper again right before it runs
     ran: list[Step] = []
     not_run: list[tuple[Step, str, str]] = []
+    cleanups: list[dict[str, Any]] = []
     for index, step in enumerate(plan.steps):
         if before_step:
             before_step(index, step)
         try:
-            agent.run(step)
+            entry = agent.run(step)
             ran.append(step)
             emit("Agent", f"Ran '{step.title}' on {step.host}", detail=step.command)
+            if step.reversible:
+                confirmed = bool((entry or {}).get("cleanup_ok"))
+                cleanups.append({"step_id": step.id, "test_id": step.test_id, "host": step.host,
+                                 "technique": step.technique, "confirmed": confirmed,
+                                 "cleanup": step.cleanup, "verify": step.verify})
+                emit("Agent",
+                     f"Undid the change on {step.host} and checked that nothing is left" if confirmed
+                     else f"Could NOT confirm the undo on {step.host}: the machine is blocked for "
+                          f"further change-and-undo steps until a person clears it",
+                     detail=f"{step.cleanup}\n{step.verify}", status="ok" if confirmed else "none")
         except Refused as e:
             not_run.append((step, e.reason, e.detail))
             emit("Gatekeeper", f"Refused '{step.title}' on {step.host}: {e.detail}",
@@ -114,6 +125,12 @@ def run_validation(
     # 8. Reporter
     report = reporter.report(plan.run_id, verdicts, not_run)
     report["detection_proposals"] = proposals
+    report["cleanups"] = cleanups
+    left = {c["step_id"] for c in cleanups if not c["confirmed"]}
+    for scored in report["steps"]:
+        if scored["step_id"] in left:
+            scored["findings"].append("undo not confirmed: the artifact may still be on the machine; "
+                                      "a person has to check and clear it")
     report["search_changes"] = changes
     rate = report["detection_rate"]
     emit("Reporter", f"Detection rate {'n/a' if rate is None else format(rate, '.0%')} over "

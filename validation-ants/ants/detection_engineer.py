@@ -40,7 +40,7 @@ LIBRARY_PATH = Path(__file__).with_name("detections.json")
 MARKER_TEXT_RE = re.compile(
     r"oaev-(?:step|implant)-[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}"
     r"(?:-agent-[0-9a-f\-]{36})?", re.IGNORECASE)
-_TERM_RE = re.compile(r"^[A-Za-z0-9 /\-._]+$")
+_TERM_RE = re.compile(r"^[A-Za-z0-9 /\-._+]+$")
 
 
 _COMMAND_RE = re.compile(r"^(?:cmd\.exe /c |powershell\.exe -NoProfile -Command )(.+)$", re.IGNORECASE)
@@ -53,12 +53,19 @@ def derive_terms(command: str) -> list[str] | None:
     match = _COMMAND_RE.match(strip_markers(command).strip())
     if not match:
         return None
-    words = re.split(r"\s*(?:&&|\|\||&|\||;|#)\s*", match.group(1).strip())[0].split()
-    if not words:
+    parts = [p.split() for p in re.split(r"\s*(?:&&|\|\||&|\||;|#)\s*", match.group(1).strip())]
+
+    def tool_of(words: list[str]) -> str:
+        name = words[0].lower() if words else ""
+        return name[:-4] if name.endswith(".exe") else name
+
+    # The telling part of a command is not the part that only sets a file up.
+    telling = [w for w in parts if w and tool_of(w) not in ("rem", "echo", "type", "copy")]
+    if not telling:
         return None
-    tool = words[0].lower()
-    tool = tool[:-4] if tool.endswith(".exe") else tool
-    if not _TERM_RE.match(tool) or tool in ("rem", "echo"):
+    words = telling[0]
+    tool = tool_of(words)
+    if not _TERM_RE.match(tool):
         return None
     terms = [tool]
     if len(words) > 1 and _TERM_RE.match(words[1]) and len(words[1]) <= 24:

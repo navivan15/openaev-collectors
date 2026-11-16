@@ -58,6 +58,7 @@ from ants.models import COULD_NOT_CHECK, DETECTED, MISSED, PREVENTED  # noqa: E4
 from ants.observers import FalconHttpClient, FalconObserver, SplunkObserver  # noqa: E402
 from ants.pipeline import run_validation  # noqa: E402
 from ants.planner import CATALOGUE_PATH, Planner  # noqa: E402
+from ants.reversible import ReversibleError, check_reversible, load_reversible  # noqa: E402
 from ants.reporter import Reporter, team_views  # noqa: E402
 
 SCENARIO = sys.argv[1] if len(sys.argv) > 1 else "full_run"
@@ -102,6 +103,10 @@ DEFENCES = {
                                 "falcon_rule": "File written to temp by script"},
     "action:dns_lookup_marker": {"splunk_rule": DNS_RULE},
     "action:email_marker": {"proofpoint": "quarantine"},
+    # Change-and-undo actions: two are seen, the rest are not.
+    "action:task_create_marked": {"falcon": "detect", "forward": True, "falcon_rule": "Scheduled task created"},
+    "action:run_key_marked": {"splunk_rule": {"sourcetype": "XmlWinEventLog", "field": "process",
+                                              "rule_name": "Logon autostart value added"}},
     "action:web_request_marker": {"checkpoint": "drop"},
     # network_config, process_list, local_accounts, neighbours, tcp_probe: nothing sees them
 }
@@ -319,17 +324,20 @@ def start(handler, port):
 # The ants, wired together
 # ----------------------------------------------------------------------------
 class Ants:
-    def __init__(self, scope=None, work=None, splunk_env=None, extra_actions=None):
+    def __init__(self, scope=None, work=None, splunk_env=None, extra_actions=None, reversible=False):
         work = work or WORK
         splunk_env = splunk_env or {}     # lab_splunk.py points the readers at a lab Splunk
         now = datetime.now(timezone.utc)
-        self.planner = Planner()
+        # reversible=True switches the change-and-undo actions on for this run.
+        self.planner = Planner(reversible=reversible)
         if extra_actions:                 # actions a person approved through the librarian
             self.planner.add_actions(extra_actions)
         self.scope = scope or {
             "allowed_hosts": [HOST1["name"], HOST2["name"]],
             "allowed_targets": [HOST1["target_ip"]],
             "allowed_mailboxes": [HOST1["mailbox"], HOST2["mailbox"]],
+            # Only the first host is a dedicated test machine for change-and-undo steps.
+            "reversible_hosts": [HOST1["name"]] if reversible else [],
             "allowed_actions": list(self.planner.actions),
             "not_before": (now - timedelta(hours=1)).isoformat(),
             "not_after": (now + timedelta(hours=2)).isoformat(),
@@ -1463,7 +1471,10 @@ def attack_library():
     """Every action on the allow-list and every family the ants refuse, by ATT&CK tactic."""
     data = json.loads(Path(CATALOGUE_PATH).read_text(encoding="utf-8"))
     detections = json.loads(Path(DETECTIONS_PATH).read_text(encoding="utf-8"))
-    names = data.get("techniques", {})
+    names = dict(data.get("techniques", {}))
+    reversible_actions, reversible_names = load_reversible()
+    names.update(reversible_names)
+    data["actions"] = {**data["actions"], **reversible_actions}
 
     def info(tech):
         entry = names.get(tech) or names.get(tech.split(".", 1)[0]) or {}
@@ -1480,6 +1491,9 @@ def attack_library():
             "fidelity": action.get("fidelity", "full"),
             "agentless": bool(action.get("agentless")),
             "tool": action.get("tool"),
+            "reversible": bool(action.get("reversible")),
+            "changes": action.get("changes"), "cleanup": action.get("cleanup"),
+            "verify": action.get("verify"),
             "expect": action.get("expect", {}),
             "detections": [{"id": d["id"], "title": d["title"], "kind": d["kind"]}
                            for d in detections["detections"] if tech in d["techniques"]],
@@ -1509,7 +1523,9 @@ def s_custom():
     name = re.sub(r"[^A-Za-z0-9 _\-]", "", str(spec.get("name") or ""))[:48].strip() or "Library selection"
     if not picked or not hosts:
         return ["nothing to run: pick at least one attack type and one host"], "custom run"
-    ants, fails, box = Ants(), [], {}
+    # Change-and-undo attack types switch that kind of action on for this run. They still
+    # only run on the dedicated test machine.
+    ants, fails, box = Ants(reversible=any(known[t].get("reversible") for t in picked)), [], {}
 
     def build():
         techniques = sorted((Technique(id=t, name=known[t]["name"], tactic=known[t]["tactic"])
@@ -1775,6 +1791,105 @@ def s_librarian_rules():
     return fails, f"{total} commands checked: {total - refused} read-only ones allowed, {refused} refused"
 
 
+def s_reversible():
+    """Change-and-undo tests: one small marked change, undone and checked, on a dedicated test machine only."""
+    fails, box = [], {}
+    actions, names = load_reversible()
+    techniques = [Technique(id=a["techniques"][0], name=names[a["techniques"][0]]["name"],
+                            tactic=names[a["techniques"][0]]["tactic"]) for a in actions.values()]
+    threat = Threat(id="change-and-undo", name="Change and undo", kind="selection",
+                    description="Persistence, hiding and execution techniques", techniques=techniques)
+
+    # Off by default: without the switch the library has no action for any of them.
+    plain = Ants()
+    try:
+        plain.builder.draft(threat)
+        fails.append("change-and-undo actions are on without the switch")
+    except ValueError:
+        pass
+
+    ants = Ants(work=Path(tempfile.mkdtemp(prefix="oaev-ants-")), reversible=True)
+
+    def build():
+        draft = ants.builder.draft(threat)
+        emit("Scenario builder", f"Draft '{draft['id']}': {len(draft['tests'])} change-and-undo test(s) "
+                                 f"built from the action library", data=draft)
+        box["scenario"] = ants.builder.approve(draft["id"], "purple.lead")
+        return ants.planner.use_scenario(box["scenario"])
+
+    r1 = ants.run(build, [HOST1, HOST2], label="nine change-and-undo tests on two machines", scenario=box)
+    undone = [c for c in r1["cleanups"] if c["confirmed"]]
+    if len(r1["steps"]) != 9 or len(undone) != 9 or {c["host"] for c in r1["cleanups"]} != {HOST1["name"]}:
+        fails.append(f"{len(r1['steps'])} step(s) scored, {len(undone)} undo(s) confirmed")
+    want_not_run(fails, r1, "reversible_not_allowed", 9)          # the second machine is not a test machine
+    totals = r1["totals"]
+    if (totals[DETECTED], totals[MISSED]) != (2, 7):
+        fails.append(f"outcomes {totals}")
+    audit = [a["event"] for a in ants.gatekeeper.read_audit()]
+    if audit.count("cleanup_confirmed") != 9 or not r1["audit_intact"]:
+        fails.append(f"audit log has {audit.count('cleanup_confirmed')} confirmed undo(s)")
+    built = [p for p in r1["detection_proposals"]["proposals"] if p.get("origin") == "built from the test"]
+    titles = sorted(p["title"] for p in built if p["kind"] == "single")
+    if titles != ["attrib +h run", "bitsadmin /create run", "certutil -decode run", "cscript //nologo run",
+                  "reg add run"]:
+        fails.append(f"built detections {titles}")
+
+    # An undo that cannot be confirmed: flagged, and the machine is blocked until a person clears it.
+    slug = box["scenario"]["id"]
+    ants.defences["action:registry_value_marked"] = {"cleanup_fails": True}
+    r2 = ants.run([f"{slug}-T1112", f"{slug}-T1140"], [HOST1], label="an undo that cannot be confirmed")
+    left = [s for s in r2["steps"] if any("undo not confirmed" in f for f in s["findings"])]
+    if len(left) != 1 or left[0]["test_id"] != f"{slug}-T1112":
+        fails.append(f"unconfirmed undo not flagged: {[s['findings'] for s in r2['steps']]}")
+    want_not_run(fails, r2, "host_not_clean", 1)
+    if list(ants.gatekeeper.unclean_hosts()) != [HOST1["name"].lower()]:
+        fails.append(f"blocked machines {ants.gatekeeper.unclean_hosts()}")
+    # A read-only step still runs on the blocked machine.
+    r3 = ants.run(["T-EXEC-001"], [HOST1], label="a read-only test on the blocked machine")
+    want(fails, r3, "T-EXEC-001", DETECTED)
+    ants.defences.pop("action:registry_value_marked")
+    ants.gatekeeper.clear_host(HOST1["name"], "purple.lead")
+    r4 = ants.run([f"{slug}-T1140"], [HOST1], label="after a person checked the machine and cleared it")
+    if len(r4["steps"]) != 1 or r4["not_run"] or not r4["cleanups"][0]["confirmed"]:
+        fails.append("a cleared machine still refuses change-and-undo steps")
+
+    # Guards.
+    def refused(label, step, reason):
+        try:
+            ants.gatekeeper.authorise(step)
+            fails.append(f"{label}: authorised")
+        except Refused as e:
+            if e.reason != reason:
+                fails.append(f"{label}: refused as {e.reason}, expected {reason}")
+
+    plan = ants.planner.plan([f"{slug}-T1053.005", "T-EXEC-001"], [HOST1])
+    ants.gatekeeper.sign_plan(plan, "purple.lead")
+    task, echo = plan.steps
+    task.cleanup = "cmd.exe /c schtasks /delete /tn SomeoneElsesTask /f"
+    refused("an undo changed to delete another task", task, "command_not_allowed")
+    echo.cleanup = "cmd.exe /c del important.txt"
+    refused("a read-only step given an undo", echo, "command_not_allowed")
+    payload = "cmd.exe /c echo oaev-step-{marker}"
+    good = actions["task_create_marked"]
+    bad = {
+        "launches something else": dict(good, command=good["command"].replace("cmd.exe /c echo oaev-step-{marker}\"", "calc.exe\"")),
+        "runs as another account": dict(good, command=good["command"] + " /ru SYSTEM"),
+        "no undo": dict(good, cleanup=""),
+        "no check": dict(good, verify=""),
+        "task not named with the marker": dict(good, command=good["command"].replace("/tn oaev-step-{marker}", "/tn Updater")),
+        "machine-wide registry": dict(actions["run_key_marked"], command=actions["run_key_marked"]["command"].replace("HKCU", "HKLM")),
+        "deletes something else": dict(actions["hidden_file_marked"], cleanup="cmd.exe /c del %TEMP%\\oaev-step-{marker}.txt & del C:\\Windows\\win.ini"),
+        "uses a tool that is not on the list": dict(actions["script_marked"], command=actions["script_marked"]["command"] + " & powershell -c calc"),
+    }
+    for label, action in bad.items():
+        if not check_reversible(action, payload):
+            fails.append(f"a change-and-undo action that {label} passed the rules")
+    return fails, ("9 change-and-undo tests on the dedicated test machine: all ran, were undone and checked "
+                   "(2 Detected, 7 Missed, 5 detections built from the commands); the same 9 refused on a "
+                   "machine that is not a test machine; an undo that could not be confirmed was flagged and "
+                   "blocked the machine until a person cleared it; 8 unsafe variants refused by the rules")
+
+
 class ScriptedModel:
     """Stands in for a model in the sandbox. It answers from a script, so a run is repeatable
     and needs no model at all. A real model is any callable that takes the request text."""
@@ -1981,6 +2096,7 @@ def s_gateways():
 
 
 SCENARIOS = {
+    "reversible": ("Change-and-undo tests: persistence, hiding, execution", s_reversible),
     "librarian": ("Librarian: a missing technique gets a harmless public test", s_librarian),
     "librarian_rules": ("Librarian: what its rules allow and refuse", s_librarian_rules),
     "drafter": ("Drafter: a model drafts a test when no public test fits", s_drafter),

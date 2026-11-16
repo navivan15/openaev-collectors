@@ -88,6 +88,8 @@ class Gatekeeper:
         self.allowed_targets = {str(ipaddress.ip_address(t))
                                 for t in scope.get("allowed_targets", [])}
         self.allowed_actions = set(scope.get("allowed_actions", []))
+        # Dedicated test machines: the only hosts where a change-and-undo step may run.
+        self.reversible_hosts = {norm_host(h) for h in scope.get("reversible_hosts", [])}
         # Test mailboxes an email step may be sent to. Nothing else gets mail.
         self.allowed_mailboxes = [str(m) for m in scope.get("allowed_mailboxes", [])]
         for mailbox in self.allowed_mailboxes:
@@ -213,6 +215,46 @@ class Gatekeeper:
                 raise Refused("audit_broken", "the audit log does not verify")
             return self._append(state, event, step, **extra)
 
+    # -- change-and-undo steps ----------------------------------------------------
+
+    def record_cleanup(self, step: Step, confirmed: bool, detail: str = "") -> dict[str, Any]:
+        """Record whether a change-and-undo step's undo was confirmed.
+
+        An unconfirmed undo blocks the machine for further change-and-undo steps
+        until a person clears it.
+        """
+        with self._locked():
+            try:
+                state = self._read_state()
+                intact, _ = self._check_log(state)
+            except (ValueError, OSError):
+                intact = False
+            if not intact:
+                raise Refused("audit_broken", "the audit log does not verify")
+            if not confirmed:
+                state.setdefault("unclean", {})[norm_host(step.host)] = step.id
+            return self._append(state, "cleanup_confirmed" if confirmed else "cleanup_failed", step,
+                                detail=detail or (step.cleanup or ""))
+
+    def unclean_hosts(self) -> dict[str, str]:
+        """Machines with an undo that was not confirmed: host -> the step that left it."""
+        try:
+            return dict(self._read_state().get("unclean", {}))
+        except (ValueError, OSError):
+            return {}
+
+    def clear_host(self, host: str, by: str) -> None:
+        """A person has checked the machine by hand and says it is clean."""
+        if not by or not by.strip():
+            raise ValueError("Clearing a machine needs a person")
+        with self._locked():
+            state = self._read_state()
+            intact, _ = self._check_log(state)
+            if not intact:
+                raise Refused("audit_broken", "the audit log does not verify")
+            state.get("unclean", {}).pop(norm_host(host), None)
+            self._append(state, "host_cleared", None, host=host, actor=by.strip())
+
     # -- kill switch -----------------------------------------------------------
 
     def kill_switch_engaged(self) -> bool:
@@ -259,7 +301,21 @@ class Gatekeeper:
                           f"target address '{step.target_ip}' is not on the scope list")
         if step.action not in self.allowed_actions or step.action not in self.actions:
             raise Refused("action_not_allowed", f"action '{step.action}' is not allowed")
-        template = self.actions[step.action]["command"]
+        action = self.actions[step.action]
+        if action.get("reversible"):
+            # A step that changes something: only on a dedicated test machine, and only
+            # with exactly the allow-listed undo and check.
+            if host not in self.reversible_hosts:
+                raise Refused("reversible_not_allowed",
+                              f"'{step.host}' is not listed as a dedicated test machine, and this "
+                              f"step changes something before undoing it")
+            if (not step.reversible or step.cleanup != action["cleanup"].format(marker=step.id)
+                    or step.verify != action["verify"].format(marker=step.id)):
+                raise Refused("command_not_allowed",
+                              "the undo or its check is not what the allow-listed action produces")
+        elif step.reversible or step.cleanup or step.verify:
+            raise Refused("command_not_allowed", "a read-only action cannot carry an undo step")
+        template = action["command"]
         if "{mailbox}" in template:
             # An email step: the command must be exactly the allow-listed test
             # email, addressed to a mailbox on the scope list.
@@ -328,6 +384,10 @@ class Gatekeeper:
                     raise Refused("bad_signature",
                                   "the step, or its approved window, changed after signing")
                 self._check_window()
+                if step.reversible and norm_host(step.host) in state.get("unclean", {}):
+                    raise Refused("host_not_clean",
+                                  "an earlier change on this machine was not confirmed undone; "
+                                  "a person has to check the machine and clear it")
                 if step.id in state["used"]:
                     raise Refused("replay", "this step was already authorised once")
                 if state["runs"].get(step.run_id, 0) >= self.max_steps:

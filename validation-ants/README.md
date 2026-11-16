@@ -224,6 +224,58 @@ not check into Missed); it reported wrong calls for both and none once they were
 The playground is still a simulation: the "defences" are the sandbox's own synthetic telemetry. It measures whether
 the ants read that telemetry correctly, not whether your real tools detect anything.
 
+## Change-and-undo tests
+
+A read-only command can imitate looking around. It cannot imitate an attack that changes the machine: a scheduled
+task, a logon autostart, a hidden file. Change-and-undo actions (`ants/reversible.json`) can, and stay benign.
+Each one makes one small change, undoes it, and checks that the undo worked.
+
+| Technique | What the action does |
+|---|---|
+| T1053.005 Scheduled Task | Creates a task set for the year 2099 that would only print the marker; deletes it |
+| T1547.001 Registry Run Keys | Adds a logon autostart value that would only print the marker; removes it |
+| T1197 BITS Jobs | Creates an empty transfer job; cancels it |
+| T1112 Modify Registry | Writes one value under a test key of the current user; removes it |
+| T1564.001 Hidden Files | Creates an empty hidden file in the temp folder; unhides and deletes it |
+| T1564.004 NTFS File Attributes | Writes the marker into a second data stream of an empty temp file; deletes the file |
+| T1036.003 Rename Legitimate Utilities | Copies the built-in `whoami` to the temp folder under a marked name and runs it; deletes it |
+| T1140 Decode Files | Decodes a few characters of harmless text with the built-in certificate tool; deletes both files |
+| T1059.005 Visual Basic | Runs a one-line script that prints the marker; deletes it |
+
+What keeps them benign (`ants/reversible.py` checks every entry when the file is loaded, and a broken rule stops
+the load):
+
+1. A change, an undo and a check. None can be left out.
+2. Everything created is named with the step marker, and the undo can only remove that.
+3. Anything set up to launch is exactly the harmless payload: a command that prints the marker.
+4. Current user only. No administrator rights, nothing machine-wide.
+5. No network, no passwords, nothing in anyone's own folders.
+6. A short list of built-in tools, each only in the form used here.
+
+Three controls outside that file:
+
+- **Off by default.** A run has to switch them on (`Planner(reversible=True)`). Without the switch the library has
+  no action for these techniques.
+- **Dedicated test machines only.** The gatekeeper's scope has a list, `reversible_hosts`. On any other machine
+  the step is refused (`reversible_not_allowed`). The undo and its check are part of what is signed; a changed
+  undo, or an undo attached to a read-only step, is refused.
+- **An undo that cannot be confirmed blocks the machine.** The gatekeeper records every undo in the audit log.
+  When the check still finds the artifact, the step is flagged in the report, and further change-and-undo steps on
+  that machine are refused (`host_not_clean`) until a person has looked and cleared it. Read-only steps still run.
+
+When one of these is missed, the detection engineer builds a detection from the command that matters (`reg add`,
+`attrib +h`, `certutil -decode`, `bitsadmin /create`, `cscript //nologo`), not from the part that only sets a
+file up.
+
+```shell
+splunk-es/.venv/Scripts/python validation-ants/sandbox.py reversible
+```
+
+**Not run on a real machine.** The commands are written from how the built-in tools work and have never been
+executed, on this PC or anywhere else: the sandbox's agent only writes the logs they would leave. Before they run
+on a real test machine each one needs to be run there once by a person, including its undo and its check. In
+particular the date format of the scheduled task and whether a standard user may create it depend on the machine.
+
 ## Librarian: a technique with no action
 
 When a scenario names a technique the action library has no action for, the librarian ant (`ants/librarian.py`)

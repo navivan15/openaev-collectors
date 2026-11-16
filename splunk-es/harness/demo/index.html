@@ -548,6 +548,7 @@ const FEATURED = [
   ["full_run", "All ants, one run", "The four base tests through every ant: plan, gate, run, observe, match, report."],
   ["playground", "Blind playground", "Random steps, hidden defences and decoy alerts. A referee checks every call the ants make."],
   ["detection_loop", "From Missed to Detected", "A missed step gets a tested detection proposal. A person approves and deploys it, and the re-run catches the step."],
+  ["reversible", "Change and undo tests", "Persistence, hiding and execution tests that make one small marked change, undo it and check it is gone. Only on a dedicated test machine."],
   ["librarian", "Fill a gap in the library", "A scenario names techniques with no action. The librarian finds harmless public tests, tries them, and a person approves them."],
   ["drafter", "Call the AI drafter", "No public test fits, so a model is asked for a read-only one. Its answers go through the same rules. Here the model is a scripted stand-in."],
   ["gateways", "Email and firewall tests", "A marked test email and marked web requests. The mail gateway's and the firewall's own logs, in Splunk, say blocked or let through."],
@@ -571,6 +572,7 @@ function matches(item) {
   if (f.tactics.size && !f.tactics.has(item.tactic)) return false;
   if (f.show === "run" && !item.runnable) return false;
   if (f.show === "refused" && item.runnable) return false;
+  if (f.show === "reversible" && !item.reversible) return false;
   if (f.watch !== "any" && !(item.runnable && (item.tool ? item.tool === f.watch : item.expect[f.watch]))) return false;
   if (f.team !== "any" && !(item.runnable && item.category === f.team)) return false;
   if (f.result !== "any") {
@@ -594,7 +596,8 @@ function attackCard(item) {
   const last = S.last[item.technique];
   const fact = (k, v) => el("div", {}, el("dt", { text: k }), el("dd", {}, v));
   const card = el("article", { class: "attack" + (picked ? " sel" : "") + (item.runnable ? "" : " refused"), style: `--tc:${color}` },
-    el("div", { class: "a-top" }, tacticTag(item.tactic), el("span", { class: "tid", text: item.technique }), el("span", { class: "sp" }),
+    el("div", { class: "a-top" }, tacticTag(item.tactic), el("span", { class: "tid", text: item.technique }),
+      item.reversible ? el("span", { class: "tag narrow", text: "change and undo" }) : null, el("span", { class: "sp" }),
       !item.runnable ? el("span", { class: "chip cnc", text: "Not simulated" })
         : last ? last.outcomes.map((o) => el("span", { class: "chip " + OUTCOME_CLASS[o], text: o, title: `Latest result, from job ${last.job}: ${last.title}` }))
           : el("span", { class: "chip neu", text: "Not run yet" })),
@@ -605,15 +608,22 @@ function attackCard(item) {
   } else {
     const watched = item.tool ? `${item.tool}, read from its logs in Splunk (${item.expect.splunk || "detection"})`
       : Object.entries(item.expect).map(([src, kind]) => `${src === "falcon" ? "Falcon" : "Splunk"} (${kind})`).join(", ");
-    const where = item.category === "email" ? "In the email's subject, so the mail gateway's log can be tied to this exact step"
+    const where = item.reversible ? "In the name of everything it creates, and in the command"
+      : item.category === "email" ? "In the email's subject, so the mail gateway's log can be tied to this exact step"
       : item.id === "web_request_marker" ? "In the web address, so the firewall's log can be tied to this exact step"
         : item.agentless ? "None: a plain connection has no place for one, so it matches on addresses and time"
           : "Carried in the command, so an alert can be tied to this exact step";
     card.append(el("p", { class: "desc", text: item.description }), el("div", { class: "cmd", text: item.command }),
       el("dl", { class: "facts" },
+        item.reversible ? fact("What it changes", item.changes) : null,
+        item.reversible ? fact("Undo", el("div", { class: "cmd", text: item.cleanup })) : null,
+        item.reversible ? fact("Check", ["Must find nothing: ", el("div", { class: "cmd", text: item.verify })]) : null,
+        item.reversible ? fact("Where it runs", "Only on machines listed as dedicated test machines. A machine whose undo cannot be confirmed is blocked until a person clears it.") : null,
         fact("Watched by", watched || "nothing"),
         fact("Team", item.category === "network" ? "Network (NetOps)" : item.category === "email" ? "Email (SecOps)" : "Endpoint (SecOps)"),
-        fact("How real", item.fidelity === "partial" ? "Partial: the same tool, in a read-only way" : "Full: the same command an intruder would run"),
+        fact("How real", item.reversible ? (item.fidelity === "partial" ? "Partial: the real change, on a test key or an empty job"
+          : "Full: the real change with a harmless payload, undone right away")
+          : item.fidelity === "partial" ? "Partial: the same tool, in a read-only way" : "Full: the same command an intruder would run"),
         fact("Marker", where),
         fact("In this sandbox", item.sandbox_defence),
         fact("Detection on file", item.detections.length ? item.detections.map((d) => el("div", { text: d.title }))
@@ -638,7 +648,7 @@ function renderLibrary() {
   }), ...(S.f.tactics.size ? [el("button", { class: "btn link", text: "Show all types", onclick: () => { S.f.tactics.clear(); renderLibrary(); } })] : []));
   const set = (key) => (value) => { S.f[key] = value; renderLibrary(); };
   $("libSegs").replaceChildren(
-    seg("Show", [["all", "All"], ["run", "Can run"], ["refused", "Refused"]], S.f.show, set("show")),
+    seg("Show", [["all", "All"], ["run", "Can run"], ["reversible", "Change and undo"], ["refused", "Refused"]], S.f.show, set("show")),
     seg("Watched by", [["any", "Any"], ["falcon", "Falcon"], ["splunk", "Splunk"],
       ...[...new Set(S.lib.attacks.map((a) => a.tool).filter(Boolean))].map((t) => [t, t])], S.f.watch, set("watch")),
     seg("Team", [["any", "Any"], ["endpoint", "Endpoint"], ["network", "Network"],
@@ -1021,6 +1031,11 @@ function scoreCard(end, label) {
       o.method === "learned_rule" ? " (learned rule)" : o.outcome === "Could not check" || o.outcome === "Missed" ? ` (${REASONS[o.reason] || o.reason})` : "")),
       v.sightings ? el("div", { class: "d", text: `counted as ${plural(v.sightings, "detection")}` }) : null),
     el("td", {}, v.findings.length ? v.findings.map((f) => el("div", { text: f })) : "–"))));
+  if ((r.cleanups || []).length) table("Changes made and undone", ["Test", "Host", "Undo confirmed", "Undo", "Check (must find nothing)"],
+    r.cleanups.map((c) => el("tr", {}, el("td", {}, b(c.test_id), el("div", { class: "d tid", text: c.technique })),
+      el("td", { class: "mono", text: c.host }),
+      el("td", {}, el("span", { class: "chip " + (c.confirmed ? "det" : "bad"), text: c.confirmed ? "Yes" : "Not confirmed" })),
+      el("td", {}, el("div", { class: "spl", text: c.cleanup })), el("td", {}, el("div", { class: "spl", text: c.verify })))));
   if (r.not_run.length) table("Not run", ["Test", "Host", "Refused because"], r.not_run.map((n) => el("tr", {},
     el("td", {}, b(n.test_id)), el("td", { class: "mono", text: n.host }), el("td", { text: n.detail }))));
   if (r.scenario && r.scenario.coverage) table(`Scenario coverage: ${r.scenario.name} (approved by ${r.scenario.approved_by})`,
@@ -1575,7 +1590,7 @@ function showAntCard() {
 }
 async function runMapDemo() {
   const known = new Set(allTests().map((t) => t.id));
-  const ids = ["threat_scenario", "librarian", "drafter", "gateways", "playground", "detection_loop"].filter((id) => known.has(id));
+  const ids = ["threat_scenario", "reversible", "librarian", "drafter", "gateways", "playground"].filter((id) => known.has(id));
   try { adoptJobs((await postJSON("/api/jobs", { ids })).jobs, false); } catch (err) { alert("Could not start the jobs: " + err.message); }
 }
 function updateAntMap() {
