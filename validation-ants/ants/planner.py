@@ -40,6 +40,30 @@ class Planner:
                     f"not on the allow-list"
                 )
 
+    def add_actions(self, actions: dict[str, dict[str, Any]]) -> list[str]:
+        """Put actions a person approved (see librarian.py) on the allow-list.
+
+        The planner only checks their shape. Whether they are harmless, and that
+        a person approved exactly these, is the librarian's job before it hands
+        them over. Returns the ids added.
+        """
+        added = []
+        for action_id, action in actions.items():
+            if not re.match(r"^[a-z0-9_]{3,64}$", str(action_id)):
+                raise PlanningError(f"'{action_id}' is not an action id")
+            if action_id in self.actions:
+                raise PlanningError(f"Action '{action_id}' is already in the library")
+            techniques = action.get("techniques") or []
+            if not techniques or "{marker}" not in str(action.get("command") or ""):
+                raise PlanningError(f"Action '{action_id}' has no technique or no marker")
+            for technique in techniques:
+                if technique in self.not_simulated or technique.split(".", 1)[0] in self.not_simulated:
+                    raise PlanningError(
+                        f"Action '{action_id}' is for {technique}, a family the ants refuse")
+            self.actions[action_id] = action
+            added.append(action_id)
+        return added
+
     def use_scenario(self, scenario: dict[str, Any]) -> list[str]:
         """Make an approved scenario's tests plannable. Returns their ids in order.
 

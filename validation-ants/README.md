@@ -216,6 +216,48 @@ not check into Missed); it reported wrong calls for both and none once they were
 The playground is still a simulation: the "defences" are the sandbox's own synthetic telemetry. It measures whether
 the ants read that telemetry correctly, not whether your real tools detect anything.
 
+## Librarian: a technique with no action
+
+When a scenario names a technique the action library has no action for, the librarian ant (`ants/librarian.py`)
+looks for a public test and drafts an action from it. It does not invent a test and it uses no model.
+
+1. **Look up.** It reads a public library of attack tests from a local file in the layout of the Atomic Red Team
+   index (`atomics/Indexes/index.yaml`). It never downloads anything.
+2. **Filter.** Every public test for the technique is checked by fixed rules. The rules are an allow-list: a command
+   passes only when every part of it is a known read-only tool used in a known read-only way (`whoami`, `netstat`,
+   `net user` with at most one name, `reg query`, `sc query`, `schtasks /query`, `wmic ... get`, `netsh ... show`,
+   and a short list of PowerShell `Get-` commands). A test is refused when it needs administrator rights, needs
+   something installed first, needs cleaning up afterwards, writes a file, reaches another machine or the internet,
+   touches passwords, or uses anything the checker does not recognise.
+3. **Adapt.** The first test left gets the step marker and becomes a draft action. The draft keeps the public
+   test's name and id, and the reason every other candidate was refused.
+4. **Try.** The draft runs once in a throw-away sandbox: planned, signed by the gatekeeper, run by the simulated
+   agent. This shows the action works with the other ants and leaves a marked log. It cannot show that the command
+   is harmless; the agent is simulated. The rules and the person are what that rests on.
+5. **Approve.** A person approves the draft exactly as it is. The approval is refused without a passed trial,
+   without a name, or when the rules no longer pass. Approved actions are loaded with `Planner.add_actions`, and
+   each time they are loaded the rules are checked again and a draft changed after its approval is dropped.
+
+A technique in a refused family (credential dumping, log removal and so on) is never looked up, even when the public
+library has a harmless-looking test for it. A technique with only tests that change something stays a gap: that is
+where step 2 (a model drafting from harmless building blocks, with the same rules and the same approval) would
+come in. It is not built.
+
+```shell
+splunk-es/.venv/Scripts/python validation-ants/sandbox.py librarian          # a scenario with gaps, before and after
+splunk-es/.venv/Scripts/python validation-ants/sandbox.py librarian_rules    # 40 commands the rules allow or refuse
+splunk-es/.venv/Scripts/python validation-ants/sandbox.py survey FILE        # how many gaps a library file would close
+```
+
+The sandbox uses `ants/sample_atomics.yaml`: 18 entries written for it, in the same layout, some unsafe on purpose.
+It is not a copy of Atomic Red Team. With it, a scenario of ten techniques goes from 1 testable to 6: five drafts,
+two techniques with only tests that change something, one not in the library, one refused family. How many gaps the
+real Atomic Red Team index would close has not been measured: that needs the real file, which `survey` reads.
+
+The rules are deliberately narrow. They will refuse harmless tests they do not recognise (most PowerShell, anything
+with a pipe into a script block, anything that reads a file). Widening them is a reviewed change to the rule tables
+in `librarian.py`, not something an ant does.
+
 ## Email and firewall tests
 
 Two test types whose verdict comes from another tool's own logs, forwarded to Splunk. No new reader is needed: the

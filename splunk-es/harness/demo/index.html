@@ -288,6 +288,56 @@ td.mono { font-family: var(--mono); font-size: 13.5px; white-space: nowrap; }
 .check.ok b { color: var(--ok); } .check.no b { color: var(--miss); }
 
 .console { order: -1; }
+/* ---------- ant map ---------- */
+.antwrap { display: grid; grid-template-columns: minmax(0, 1fr) 420px; gap: 18px; align-items: start; }
+.mapcard { padding: 10px; min-width: 0; }
+.mapscroll { overflow-x: auto; }
+#antMap { display: block; width: 100%; min-width: 860px; height: auto; }
+.aedge { stroke: var(--line); stroke-width: 2.5; fill: none; }
+.aedge.live { stroke: var(--accent); stroke-dasharray: 9 9; animation: dash 0.9s linear infinite; }
+@keyframes dash { to { stroke-dashoffset: -18; } }
+.adot { fill: var(--accent); visibility: hidden; }
+.adot.live { visibility: visible; }
+.adisc { fill: var(--panel); stroke: var(--line); stroke-width: 2.5; }
+.aring { fill: none; stroke: var(--ac); stroke-width: 3; opacity: 0; transform-box: fill-box; transform-origin: center; }
+.aicon path { fill: none; stroke: var(--faint); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.anode.used .adisc { stroke: color-mix(in srgb, var(--ac) 55%, var(--line)); }
+.anode.used .aicon path { stroke: var(--ac); }
+.anode.working .adisc { stroke: var(--ac); fill: color-mix(in srgb, var(--ac) 16%, var(--panel)); }
+.anode.working .aring { animation: ring 1.3s ease-out infinite; }
+.anode.pulse .adisc { animation: flash 0.7s ease-out; }
+@keyframes ring { 0% { opacity: .9; transform: scale(.8); } 100% { opacity: 0; transform: scale(1.25); } }
+@keyframes flash { 0% { fill: color-mix(in srgb, var(--ac) 42%, var(--panel)); } 100% { fill: var(--panel); } }
+.acount { visibility: hidden; }
+.anode.working .acount { visibility: visible; }
+.acount circle { fill: var(--ac); }
+.acount text { fill: #fff; font: 700 13px var(--sans); text-anchor: middle; dominant-baseline: central; }
+.alabel { text-align: center; font: 13.5px/1.3 var(--sans); color: var(--muted); }
+.alabel b { display: block; font-size: 15.5px; color: var(--text); background: var(--panel); width: fit-content; margin: 0 auto; padding: 0 6px; border-radius: 6px; }
+.alabel span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; background: var(--panel); border-radius: 6px; }
+.anode.working .alabel span { color: var(--text); }
+.workers > header { border-bottom: 1px solid var(--line-2); }
+.wrow { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 16px; border-top: 1px solid var(--line-2); }
+.wrow:first-child { border-top: 0; }
+.wicon { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; border: 1.5px solid var(--line);
+  background: var(--panel-2); color: var(--faint); }
+.wicon svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
+.wrow.used .wicon { color: var(--ac); border-color: color-mix(in srgb, var(--ac) 55%, var(--line)); }
+.wrow.working { background: color-mix(in srgb, var(--ac) 9%, var(--panel)); }
+.wrow.working .wicon { background: var(--ac); border-color: var(--ac); color: #fff; }
+.wname { font-weight: 700; font-size: 16px; }
+.wrole { color: var(--muted); font-size: 14px; }
+.wtask { font-size: 14.5px; margin-top: 3px; overflow-wrap: anywhere; }
+.wtask i { font-style: normal; color: var(--faint); }
+.wstate { text-align: right; font-size: 13.5px; color: var(--faint); white-space: nowrap; }
+.wchip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; font-weight: 650; font-size: 13.5px;
+  background: var(--line-2); color: var(--muted); }
+.wrow.working .wchip { background: var(--ac); color: #fff; }
+.wrow.working .wchip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: pulse 1.1s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) { .aedge.live, .anode.working .aring, .anode.pulse .adisc, .wrow.working .wchip::before { animation: none; }
+  .anode.working .aring { opacity: .7; } .adot.live { visibility: hidden; } }
+@media (max-width: 1250px) { .antwrap { grid-template-columns: 1fr; } }
+
 @media (min-width: 1700px) {
   .d-body { grid-template-columns: minmax(0, 1.5fr) minmax(400px, 1fr); }
   .console { order: 0; position: sticky; top: calc(var(--top) + 14px); }
@@ -326,6 +376,7 @@ td.mono { font-family: var(--mono); font-size: 13.5px; white-space: nowrap; }
   <nav class="tabs" role="tablist" aria-label="Views">
     <button class="tab" role="tab" id="tab-library" aria-selected="true" aria-controls="view-library">Attack library</button>
     <button class="tab" role="tab" id="tab-sandbox" aria-selected="false" aria-controls="view-sandbox">Sandbox <span class="badge" id="tabBadge" hidden></span></button>
+    <button class="tab" role="tab" id="tab-ants" aria-selected="false" aria-controls="view-ants">Ant map <span class="badge" id="antBadge" hidden></span></button>
   </nav>
   <div class="mock" title="Every job uses mock Splunk, mock Falcon, mock OpenCTI and mock OpenAEV">Mock sandbox: no real Splunk, Falcon or hosts</div>
   <button class="btn small" id="theme" aria-label="Switch between light and dark">Dark</button>
@@ -367,6 +418,20 @@ td.mono { font-family: var(--mono); font-size: 13.5px; white-space: nowrap; }
     <div class="work">
       <div class="jobs" id="jobs" aria-label="Jobs"></div>
       <div class="detail" id="detail"></div>
+    </div>
+  </section>
+  <section id="view-ants" role="tabpanel" aria-labelledby="tab-ants" hidden>
+    <div class="page-head">
+      <h1>Ant map</h1>
+      <p>Every ant, where it sits in the work, and what it is doing right now. An ant lights up in its own colour while it is working on a job.</p>
+    </div>
+    <div class="card strip" id="antStrip"></div>
+    <div class="antwrap">
+      <div class="card mapcard"><div class="mapscroll">
+        <svg id="antMap" viewBox="0 0 1180 730" role="img" aria-label="Map of the ants and how work passes between them"></svg>
+      </div></div>
+      <aside class="card workers" aria-label="Ant workers"><header><h3>Ant workers</h3><span class="sub" id="workersSub"></span></header>
+        <div id="workers"></div></aside>
     </div>
   </section>
 </main>
@@ -461,6 +526,7 @@ const FEATURED = [
   ["full_run", "All ants, one run", "The four base tests through every ant: plan, gate, run, observe, match, report."],
   ["playground", "Blind playground", "Random steps, hidden defences and decoy alerts. A referee checks every call the ants make."],
   ["detection_loop", "From Missed to Detected", "A missed step gets a tested detection proposal. A person approves and deploys it, and the re-run catches the step."],
+  ["librarian", "Fill a gap in the library", "A scenario names techniques with no action. The librarian finds harmless public tests, tries them, and a person approves them."],
   ["gateways", "Email and firewall tests", "A marked test email and marked web requests. The mail gateway's and the firewall's own logs, in Splunk, say blocked or let through."],
 ];
 
@@ -597,8 +663,8 @@ async function runSelection() {
 /* ====================================================================== reading a job */
 const DELAY = { ant: 430, run_start: 260, run_end: 320, cycle_start: 320, index_check: 280, search: 430, rows: 340, cycle_end: 320,
   validator: 300, template: 300, harness: 120 };
-const ANTS = ["Library", "Intel", "Scenario builder", "Planner", "Gatekeeper", "Agent", "Splunk observer", "Falcon observer", "Analyst", "Matcher", "Detection engineer", "Reporter", "Referee"];
-const OPTIONAL_ANTS = ["Library", "Intel", "Scenario builder", "Detection engineer", "Referee"];
+const ANTS = ["Library", "Intel", "Scenario builder", "Librarian", "Planner", "Gatekeeper", "Agent", "Splunk observer", "Falcon observer", "Analyst", "Matcher", "Detection engineer", "Reporter", "Referee"];
+const OPTIONAL_ANTS = ["Library", "Intel", "Scenario builder", "Librarian", "Detection engineer", "Referee"];
 const PROPOSAL_CLASS = { "ready for review": "det", "too noisy": "cnc", "does not catch": "mis", "deployed, but did not fire": "bad" };
 const COVERAGE_CLASS = { simulated: "det", partial: "prv", "not simulated": "cnc", "no action": "mis" };
 const STAGE_OF = { Step: 1, Memory: 1, "Query writer": 2, Validator: 3, Splunk: 4, Collector: 4, Matcher: 5, Outcome: 6, Evidence: 6 };
@@ -740,6 +806,14 @@ function antDetail(e) {
     d.techniques.map((t) => el("span", { class: "tactic", style: `--tc:${tacticOf(t.tactic)[1]}`, title: tacticOf(t.tactic)[0] }, el("i"), `${t.id} ${t.name}`))));
   if (e.ant === "Scenario builder" && d && d.coverage) out.push(el("div", { class: "kv" },
     d.coverage.map((c) => el("span", {}, el("i", { text: c.technique + " " }), c.status))));
+  if (e.ant === "Librarian" && Array.isArray(d)) out.push(el("div", { class: "tbl-wrap", style: "margin-top:8px" }, el("table", {},
+    el("thead", {}, el("tr", {}, ["Technique", "Result", "Draft action, or why not"].map((h) => el("th", { text: h })))),
+    el("tbody", {}, d.map((f) => el("tr", {},
+      el("td", {}, b(f.technique), el("div", { class: "d", text: f.name || "" })),
+      el("td", {}, el("span", { class: "chip " + ({ draft: "prv", approved: "det", "nothing harmless found": "cnc", "not in the public library": "neu", "refused family": "mis" }[f.status] || "neu"), text: f.status }),
+        f.trial ? el("div", { class: "d", text: f.trial.passed ? "sandbox trial passed" : "sandbox trial failed" }) : null),
+      el("td", {}, f.command ? el("div", { class: "spl", text: f.command }) : null, f.why ? el("div", { class: "d", text: f.why }) : null,
+        (f.candidates || []).filter((c) => c.why && c.why.length).map((c) => el("div", { class: "d", text: `Refused "${c.name}": ${c.why.join("; ")}.` })))))))));
   if (e.ant === "Detection engineer" && d && d.proposals) out.push(el("div", { class: "kv" },
     d.proposals.map((p) => el("span", {}, el("i", { text: p.title + ": " }), p.status))));
   if (e.ant === "Planner" && Array.isArray(d)) out.push(el("div", { class: "kv" },
@@ -1272,6 +1346,11 @@ function refresh() {
   const sel = S.selected && S.jobs.get(S.selected);
   if ((sel && (sel.dirty || structural)) || (!sel && D.id !== null) || (sel && D.id !== sel.s.id)) renderDetail();
   for (const j of S.jobs.values()) j.dirty = false;
+  if (S.view === "ants") updateAntMap(); else updateAntBadge();
+}
+function updateAntBadge() {
+  const working = Object.values(antState()).filter((s) => s.working.length).length;
+  $("antBadge").hidden = !working; $("antBadge").textContent = working;
 }
 function tick() {
   const now = performance.now();
@@ -1286,14 +1365,168 @@ function tick() {
   if (any) refresh();
 }
 
+/* ====================================================================== ant map */
+const ICONS = {
+  radar: "M12 3a9 9 0 1 0 9 9M12 7a5 5 0 1 0 5 5M12 12l6-6",
+  book: "M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2zM4 19V5M9 8h6",
+  blocks: "M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z",
+  list: "M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01",
+  shield: "M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6zM9 12l2 2 4-4",
+  terminal: "M4 5h16v14H4zM7 9l3 3-3 3M12 15h5",
+  pen: "M4 20l4-1L19 8l-3-3L5 16zM14 7l3 3",
+  check: "M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18zM8 12l3 3 5-6",
+  pin: "M12 21s-6-5.5-6-10a6 6 0 0 1 12 0c0 4.5-6 10-6 10zM12 9a2 2 0 1 0 0 4 2 2 0 0 0 0-4z",
+  search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zM16 16l4 4",
+  eye: "M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12zM12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z",
+  chart: "M4 20V4M4 20h16M8 16v-5M12 16V8M16 16v-3",
+  link: "M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1",
+  wrench: "M15 4a5 5 0 0 0-4.6 6.9L4 17.3V20h2.7l6.4-6.4A5 5 0 0 0 20 9l-3 3-3-3 3-3a5 5 0 0 0-2-2z",
+  file: "M7 3h8l4 4v14H7zM15 3v4h4M10 12h6M10 16h6",
+  flag: "M5 21V4M5 4h11l-2 4 2 4H5",
+};
+const ROSTER = [
+  { id: "Intel", role: "Reads a threat scenario from OpenCTI", color: "#0ea5e9", icon: "radar", x: 110, y: 80 },
+  { id: "Scenario builder", role: "Turns the scenario's techniques into tests", color: "#6366f1", icon: "blocks", x: 350, y: 80 },
+  { id: "Librarian", role: "Finds a harmless public test for a technique with no action", color: "#a855f7", icon: "book", x: 350, y: 250 },
+  { id: "Planner", role: "Makes the steps and gives each one a marker", color: "#14b8a6", icon: "list", x: 590, y: 80 },
+  { id: "Gatekeeper", role: "Signs what is in scope and refuses the rest", color: "#ef4444", icon: "shield", x: 830, y: 80 },
+  { id: "Agent", role: "Runs the step on the host (simulated here)", color: "#f97316", icon: "terminal", x: 1070, y: 80 },
+  { id: "Location memory", role: "Remembers where each test was found before", color: "#ca8a04", icon: "pin", x: 110, y: 250 },
+  { id: "Query writer", role: "Writes the Splunk search from checked templates", color: "#ec4899", icon: "pen", x: 110, y: 420 },
+  { id: "Validator", role: "Refuses any search that is not read-only", color: "#16a34a", icon: "check", x: 350, y: 420 },
+  { id: "Splunk observer", role: "Reads Splunk and ties alerts and logs to steps", color: "#65a30d", icon: "search", x: 590, y: 420 },
+  { id: "Falcon observer", role: "Reads CrowdStrike Falcon alerts", color: "#e11d48", icon: "eye", x: 830, y: 420 },
+  { id: "Analyst", role: "Records how each search changed, and why", color: "#0891b2", icon: "chart", x: 350, y: 590 },
+  { id: "Matcher", role: "Joins what the tools saw into one verdict per step", color: "#8b5cf6", icon: "link", x: 590, y: 590 },
+  { id: "Detection engineer", role: "Tests a detection for each missed step", color: "#c026d3", icon: "wrench", x: 830, y: 590 },
+  { id: "Reporter", role: "Scores the run and compares it with the last one", color: "#2563eb", icon: "file", x: 1070, y: 590 },
+  { id: "Referee", role: "Checks the ants' calls in the blind playground", color: "#78716c", icon: "flag", x: 1070, y: 420 },
+];
+const ANT_EDGES = [["Intel", "Scenario builder"], ["Librarian", "Scenario builder"], ["Scenario builder", "Planner"],
+  ["Planner", "Gatekeeper"], ["Gatekeeper", "Agent"], ["Agent", "Splunk observer"], ["Agent", "Falcon observer"],
+  ["Location memory", "Query writer"], ["Query writer", "Validator"], ["Validator", "Splunk observer"],
+  ["Splunk observer", "Analyst"], ["Splunk observer", "Matcher"], ["Falcon observer", "Matcher"],
+  ["Matcher", "Detection engineer"], ["Detection engineer", "Reporter"], ["Reporter", "Referee"]];
+const SVGNS = "http://www.w3.org/2000/svg";
+function sv(tag, attrs, ...kids) {
+  const node = document.createElementNS(SVGNS, tag);
+  for (const [k, v] of Object.entries(attrs || {})) if (v !== null && v !== undefined && v !== false) node.setAttribute(k, v);
+  for (const kid of kids.flat()) if (kid) node.append(kid);
+  return node;
+}
+const iconSvg = (name) => sv("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" }, sv("path", { d: ICONS[name] }));
+const AM = { nodes: {}, edges: [], done: {}, built: false };
+
+/* What each ant did in one job, in order, from the events shown so far. */
+function antActs(j) {
+  const out = [];
+  for (const e of j.events.slice(0, j.shown)) {
+    if (e.type === "ant") out.push([e.ant === "Library" ? "Scenario builder" : e.ant, e.title]);
+    else if (e.type === "cycle_start") out.push(["Location memory", `Looked up where ${plural(e.steps.length, "step")} was found before`]);
+    else if (e.type === "index_check") out.push(["Splunk observer", `Checked that index ${e.index} ${e.ok ? "exists" : "exists: it does not"}`]);
+    else if (e.type === "search") out.push(["Query writer", `Wrote the ${e.kind} search`], ["Validator", `Checked the ${e.kind} search: read-only, allowed`]);
+    else if (e.type === "rows") out.push(["Splunk observer", `Read ${plural(e.rows.length, "row")} from Splunk`]);
+    else if (e.type === "auth_failed" || e.type === "dropped" || e.type === "search_error") out.push(["Splunk observer", "Could not get an answer from Splunk"]);
+    else if (e.type === "cycle_end") out.push(["Matcher", "Outcome: " + ((e.results || []).map((r) => r.outcome).join(", ") || "no verdict yet")]);
+    else if (e.type === "validator") out.push(["Validator", `${e.refused ? "Refused" : "Accepted"}: ${e.label}`]);
+    else if (e.type === "template") out.push(["Query writer", `Template ${e.refused ? "refused" : "accepted"}: ${e.label}`]);
+  }
+  return out;
+}
+function antState() {
+  const state = {};
+  for (const a of ROSTER) state[a.id] = { working: [], done: 0, last: null };
+  for (const j of S.jobs.values()) {
+    const acts = antActs(j), p = phase(j), live = p === "running" || p === "showing";
+    acts.forEach(([ant, text], i) => {
+      const s = state[ant];
+      if (!s) return;
+      s.done += 1;
+      s.last = { text, job: j.s.n };
+      if (live && i === acts.length - 1) s.working.push({ text, job: j.s.n });
+    });
+  }
+  return state;
+}
+function buildAntMap() {
+  const byId = Object.fromEntries(ROSTER.map((a) => [a.id, a]));
+  const edges = sv("g"), nodes = sv("g");
+  ANT_EDGES.forEach(([from, to], i) => {
+    const a = byId[from], z = byId[to];
+    const path = sv("path", { id: "ae" + i, class: "aedge", d: `M${a.x} ${a.y} L${z.x} ${z.y}` });
+    const dot = sv("circle", { r: 5.5, class: "adot" },
+      sv("animateMotion", { dur: "1.2s", repeatCount: "indefinite" }, sv("mpath", { href: "#ae" + i })));
+    edges.append(path, dot);
+    AM.edges.push({ from, to, path, dot });
+  });
+  for (const a of ROSTER) {
+    const task = el("span", { text: a.role });
+    const count = sv("text", {});
+    const g = sv("g", { class: "anode", style: `--ac:${a.color}`, transform: `translate(${a.x} ${a.y})` },
+      sv("circle", { r: 44, class: "aring" }), sv("circle", { r: 35, class: "adisc" }),
+      sv("g", { class: "aicon", transform: "translate(-16.8 -16.8) scale(1.4)" }, sv("path", { d: ICONS[a.icon] })),
+      sv("g", { class: "acount", transform: "translate(27 -27)" }, sv("circle", { r: 12 }), count),
+      sv("foreignObject", { x: -112, y: 42, width: 224, height: 84 }, el("div", { class: "alabel" }, el("b", { text: a.id }), task)));
+    nodes.append(g);
+    AM.nodes[a.id] = { g, task, count, role: a.role };
+  }
+  $("antMap").replaceChildren(edges, nodes);
+  AM.built = true;
+}
+async function runMapDemo() {
+  const known = new Set(allTests().map((t) => t.id));
+  const ids = ["threat_scenario", "librarian", "gateways", "playground", "repeat_run", "detection_loop"].filter((id) => known.has(id));
+  try { adoptJobs((await postJSON("/api/jobs", { ids })).jobs, false); } catch (err) { alert("Could not start the jobs: " + err.message); }
+}
+function updateAntMap() {
+  if (!AM.built) buildAntMap();
+  const state = antState();
+  let working = 0, tasks = 0;
+  for (const a of ROSTER) {
+    const s = state[a.id], node = AM.nodes[a.id], now = s.working[s.working.length - 1];
+    working += s.working.length ? 1 : 0; tasks += s.done;
+    node.g.classList.toggle("working", !!s.working.length);
+    node.g.classList.toggle("used", !!s.done);
+    node.count.textContent = s.working.length || "";
+    node.task.textContent = now ? now.text : s.last ? s.last.text : node.role;
+    if (AM.done[a.id] !== undefined && s.done > AM.done[a.id]) {
+      node.g.classList.remove("pulse"); void node.g.getBoundingClientRect(); node.g.classList.add("pulse");
+    }
+    AM.done[a.id] = s.done;
+  }
+  for (const e of AM.edges) {
+    const live = state[e.to].working.length > 0;
+    e.path.classList.toggle("live", live); e.dot.classList.toggle("live", live);
+  }
+  const jobs = [...S.jobs.values()].filter((j) => ["running", "showing"].includes(phase(j))).length;
+  const num = (n, label) => el("span", { class: "num" }, b(n), label);
+  put($("antStrip"), num(working, `of ${ROSTER.length} ants working now`), num(jobs, jobs === 1 ? "job running" : "jobs running"),
+    num(tasks, "tasks done this session"), el("span", { class: "sp" }),
+    el("button", { class: "btn primary", text: "Run six jobs and watch", onclick: runMapDemo }),
+    el("span", { class: "hint", text: jobs ? "Steps are shown at the speed set in the Sandbox view."
+      : "Nothing is running. Start jobs here or in the Sandbox view; the ants light up as each one takes its turn." }));
+  $("workersSub").textContent = `${working} working, ${ROSTER.length - working} idle`;
+  $("antBadge").hidden = !working; $("antBadge").textContent = working;
+  put($("workers"), ROSTER.map((a) => {
+    const s = state[a.id], now = s.working[s.working.length - 1];
+    return el("div", { class: "wrow" + (s.working.length ? " working" : "") + (s.done ? " used" : ""), style: `--ac:${a.color}` },
+      el("div", { class: "wicon" }, iconSvg(a.icon)),
+      el("div", {}, el("div", { class: "wname", text: a.id }), el("div", { class: "wrole", text: a.role }),
+        now ? el("div", { class: "wtask" }, el("i", { text: `job #${now.job}: ` }), now.text)
+          : s.last ? el("div", { class: "wtask" }, el("i", { text: `last, job #${s.last.job}: ` }), s.last.text) : null),
+      el("div", { class: "wstate" }, el("span", { class: "wchip", text: s.working.length ? (s.working.length > 1 ? `Working on ${s.working.length} jobs` : "Working") : "Idle" }),
+        el("div", { text: `${plural(s.done, "task")} done` })));
+  }));
+}
+
 /* ====================================================================== shell */
 function showView(view) {
   S.view = view;
-  for (const v of ["library", "sandbox"]) {
+  for (const v of ["library", "sandbox", "ants"]) {
     $("view-" + v).hidden = v !== view;
     $("tab-" + v).setAttribute("aria-selected", String(v === view));
   }
-  if (view === "library") renderLibrary(); else { renderTray(); renderDetail(); }
+  if (view === "library") renderLibrary(); else if (view === "ants") { renderTray(); updateAntMap(); } else { renderTray(); renderDetail(); }
   window.scrollTo(0, 0);
 }
 function applyTheme(theme) {
@@ -1305,6 +1538,7 @@ function applyTheme(theme) {
 applyTheme(store.get("oaev-theme"));
 $("tab-library").addEventListener("click", () => showView("library"));
 $("tab-sandbox").addEventListener("click", () => showView("sandbox"));
+$("tab-ants").addEventListener("click", () => showView("ants"));
 $("libSearch").addEventListener("input", (e) => { S.f.q = e.target.value.trim(); renderLibrary(); });
 $("checkSearch").addEventListener("input", (e) => { S.checkQ = e.target.value.trim(); renderCheckList(); });
 $("trayClear").addEventListener("click", () => { S.picked.clear(); renderLibrary(); });

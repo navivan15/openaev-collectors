@@ -16,6 +16,7 @@ Splunk, no real Falcon tenant, no real host.
   python validation-ants/sandbox.py playground_many 100   # 100 blind runs, tally of the calls
   python validation-ants/sandbox.py library      # the attack library as JSON (for the demo page)
   python validation-ants/sandbox.py custom       # run the attack types named in SANDBOX_CUSTOM
+  python validation-ants/sandbox.py survey FILE  # how many gaps a public test library file would close
 
 Several sandboxes can run side by side: SANDBOX_PORT_BASE moves the three mock
 ports, and HARNESS_EVENTS_STREAM names a file that gets one JSON line per event
@@ -49,6 +50,7 @@ from ants.detection_engineer import DetectionEngineer, evaluate, strip_markers  
 from ants.analyst import SearchAnalyst  # noqa: E402
 from ants.gatekeeper import Gatekeeper, Refused  # noqa: E402
 from ants.intel import TACTIC_ORDER, IntelAnt, IntelError, OpenCTIClient, Technique, Threat  # noqa: E402
+from ants.librarian import Librarian, LibrarianError, check_command  # noqa: E402
 from ants.scenario_builder import ScenarioBuilder  # noqa: E402
 from ants.matcher import Matcher, RuleBook  # noqa: E402
 from ants.models import COULD_NOT_CHECK, DETECTED, MISSED, PREVENTED  # noqa: E402
@@ -316,11 +318,13 @@ def start(handler, port):
 # The ants, wired together
 # ----------------------------------------------------------------------------
 class Ants:
-    def __init__(self, scope=None, work=None, splunk_env=None):
+    def __init__(self, scope=None, work=None, splunk_env=None, extra_actions=None):
         work = work or WORK
         splunk_env = splunk_env or {}     # lab_splunk.py points the readers at a lab Splunk
         now = datetime.now(timezone.utc)
         self.planner = Planner()
+        if extra_actions:                 # actions a person approved through the librarian
+            self.planner.add_actions(extra_actions)
         self.scope = scope or {
             "allowed_hosts": [HOST1["name"], HOST2["name"]],
             "allowed_targets": [HOST1["target_ip"]],
@@ -1538,6 +1542,223 @@ def s_custom():
                    f"detection rate {'n/a' if rate is None else format(rate, '.0%')}")
 
 
+SAMPLE_ATOMICS = HERE / "ants" / "sample_atomics.yaml"
+
+
+def trial_draft(librarian, draft_id):
+    """Try a draft action in a throw-away sandbox, before anyone is asked to approve it.
+
+    It shows that the action plans, passes the gatekeeper and leaves a marked endpoint
+    log. It cannot show that the command is harmless: the agent here is simulated.
+    That is what the rules and the person are for.
+    """
+    draft = librarian.load(draft_id)
+    notes, passed = [], False
+    try:
+        trial = Ants(work=Path(tempfile.mkdtemp(prefix="oaev-trial-")),
+                     extra_actions={draft_id: draft["action"]})
+        test_id = f"TRIAL-{draft['technique']}"
+        trial.planner.tests[test_id] = {
+            "id": test_id, "title": f"Trial of {draft_id}", "technique": draft["technique"],
+            "action": draft_id, "expect": dict(draft["action"]["expect"])}
+        plan = trial.planner.plan([test_id], [HOST1])
+        refused = trial.gatekeeper.sign_plan(plan, "sandbox.trial")
+        if refused:
+            notes.append(f"the gatekeeper refused it: {refused[0][1].detail}")
+        else:
+            step = plan.steps[0]
+            trial.agent.run(step)
+            logged = [r for r in TELEMETRY.splunk_rows
+                      if r.get("index") == RAW_INDEX and step.id in str(r.get("process"))]
+            seen = trial.splunk.observe([step], set())
+            passed = bool(logged) and seen[0].outcome == MISSED
+            notes.append(f"planned, signed and run; {len(logged)} marked endpoint log; with no "
+                         f"defence in the sandbox the step reads {seen[0].outcome}")
+    except Exception as e:               # a trial must report, never crash the run
+        notes.append(f"the trial itself failed: {type(e).__name__}: {e}")
+    return librarian.record_trial(draft_id, passed, "; ".join(notes))
+
+
+def s_librarian():
+    """A scenario names techniques the library has no action for. The librarian finds harmless public tests; a person approves them."""
+    work = WORK / "librarian"
+    ants, fails, box = Ants(), [], {}
+    librarian = Librarian(SAMPLE_ATOMICS, ants.planner.actions, ants.planner.not_simulated, work)
+    wanted = [("T1082", "System Information Discovery", "discovery"),
+              ("T1049", "System Network Connections Discovery", "discovery"),
+              ("T1007", "System Service Discovery", "discovery"),
+              ("T1012", "Query Registry", "discovery"),
+              ("T1124", "System Time Discovery", "discovery"),
+              ("T1135", "Network Share Discovery", "discovery"),
+              ("T1053.005", "Scheduled Task", "persistence"),
+              ("T1547.001", "Registry Run Keys", "persistence"),
+              ("T1003.001", "LSASS Memory", "credential-access"),
+              ("T1999", "A technique no public test covers", "discovery")]
+    threat = Threat(id="library-gap-demo", name="Scenario with gaps", kind="selection",
+                    description="Mostly techniques the library has no action for",
+                    techniques=[Technique(id=t, name=n, tactic=c) for t, n, c in wanted])
+
+    def build(planner, builder):
+        draft = builder.draft(threat)
+        gaps = [c for c in draft["coverage"] if c["status"] in ("not simulated", "no action")]
+        emit("Scenario builder", f"Draft '{draft['id']}': {len(draft['tests'])} test(s) built from the "
+                                 f"action library; {len(gaps)} technique(s) cannot be tested",
+             status="stop" if gaps else "ok", data=draft)
+        scenario = builder.approve(draft["id"], "purple.lead")
+        box.update(draft=draft, scenario=scenario)
+        return planner.use_scenario(scenario)
+
+    def first():
+        tests = build(ants.planner, ants.builder)
+        missing = [c["technique"] for c in box["draft"]["coverage"] if c["status"] == "no action"]
+        found = librarian.fill_gaps(missing)
+        box["found"] = {f["technique"]: f for f in found}
+        drafts = [f for f in found if f["status"] == "draft"]
+        emit("Librarian", f"{len(missing)} technique(s) with no action: {len(drafts)} draft(s) from "
+                          f"harmless public tests, {len(found) - len(drafts)} left as gaps",
+             status="stop" if len(drafts) < len(found) else "ok", data=found)
+        for item in drafts:
+            tried = trial_draft(librarian, item["draft_id"])
+            item["trial"] = tried["trial"]
+        emit("Librarian", f"Sandbox trial: {sum(1 for d in drafts if d['trial']['passed'])} of "
+                          f"{len(drafts)} draft(s) passed. They wait for a person; nothing is "
+                          f"on the allow-list yet", data=drafts)
+        return tests
+
+    r1 = ants.run(first, [HOST1], label="before: what the library can test today", scenario=box)
+    found = box["found"]
+    status = {t: f["status"] for t, f in found.items()}
+    expected = {"T1049": "draft", "T1007": "draft", "T1012": "draft", "T1124": "draft", "T1135": "draft",
+                "T1053.005": "nothing harmless found", "T1547.001": "nothing harmless found",
+                "T1999": "not in the public library"}
+    if status != expected:
+        fails.append(f"librarian results {status}")
+    if "T1003.001" in found or librarian.find("T1003.001")["status"] != "refused family":
+        fails.append("a refused family was looked up in the public library")
+    if len(r1["steps"]) != 1:
+        fails.append(f"{len(r1['steps'])} step(s) ran before any approval, expected only T1082")
+    if librarian.approved_actions():
+        fails.append("a draft is usable without an approval")
+    why = " ".join(" ".join(c["why"]) for c in found["T1053.005"]["candidates"])
+    if "changes something" not in why:
+        fails.append(f"the scheduled-task test was refused for the wrong reason: {why}")
+    drafts = sorted(f["draft_id"] for f in found.values() if f["status"] == "draft")
+
+    def refused(label, fn):
+        try:
+            fn()
+            fails.append(f"{label}: accepted")
+        except (LibrarianError, ValueError):
+            pass
+
+    # Guards on the way to the allow-list.
+    untried = librarian.find("T1201")["draft_id"]              # a draft that had no trial
+    refused("approval without a sandbox trial", lambda: librarian.approve(untried, "purple.lead"))
+    refused("approval without a person", lambda: librarian.approve(drafts[0], " "))
+    path = work / f"{drafts[0]}.json"
+    honest = path.read_text(encoding="utf-8")
+    changed = json.loads(honest)
+    changed["source_command"] = "net user guest /active:yes"
+    changed["action"]["command"] = "cmd.exe /c net user guest /active:yes & rem oaev-step-{marker}"
+    path.write_text(json.dumps(changed), encoding="utf-8")
+    refused("approval of a draft edited into something that changes an account",
+            lambda: librarian.approve(drafts[0], "purple.lead"))
+    path.write_text(honest, encoding="utf-8")
+    refused("an action for a refused family on the allow-list", lambda: Planner().add_actions(
+        {"art_t1003_demo": {"command": "cmd.exe /c whoami & rem oaev-step-{marker}", "techniques": ["T1003.001"]}}))
+
+    for draft_id in drafts:
+        librarian.approve(draft_id, "purple.lead")
+    if sorted(librarian.approved_actions()) != drafts:
+        fails.append(f"approved actions {sorted(librarian.approved_actions())}")
+    # Changed after approval: dropped when the approved actions are loaded.
+    changed = json.loads(path.read_text(encoding="utf-8"))
+    changed["action"]["command"] = "cmd.exe /c whoami /all & rem oaev-step-{marker}"
+    path.write_text(json.dumps(changed), encoding="utf-8")
+    if drafts[0] in librarian.approved_actions():
+        fails.append("a draft changed after its approval is still usable")
+    path.write_text(honest, encoding="utf-8")          # put back as it was, then approve again
+    librarian.approve(drafts[0], "purple.lead")
+
+    approved = librarian.approved_actions()
+    ants2 = Ants(work=Path(tempfile.mkdtemp(prefix="oaev-ants-")), extra_actions=approved)
+    emit("Librarian", f"{len(approved)} action(s) approved by purple.lead and added to the allow-list",
+         data=[{"technique": a["techniques"][0], "status": "approved", "command": a["command"],
+                "draft_id": i, "name": a["description"]} for i, a in approved.items()])
+    r2 = ants2.run(lambda: build(ants2.planner, ants2.builder), [HOST1],
+                   label="after: the same scenario with the approved actions", scenario=box)
+    cover = {}
+    for c in box["draft"]["coverage"]:
+        cover[c["status"]] = cover.get(c["status"], 0) + 1
+    if cover != {"simulated": 6, "not simulated": 1, "no action": 3}:
+        fails.append(f"coverage after approval {cover}")
+    if len(r2["steps"]) != 6 or r2["not_run"]:
+        fails.append(f"{len(r2['steps'])} step(s) scored after approval, {len(r2['not_run'])} not run")
+    if not r2["audit_intact"]:
+        fails.append("audit log chain is broken")
+    return fails, ("9 techniques without an action: 5 drafts from harmless public tests (tried, approved by a "
+                   "person, then run), 2 with only tests that change something, 1 not in the public library, "
+                   "1 refused family never looked up; unsafe, untried, nameless and changed drafts all refused")
+
+
+# What the librarian's rules must allow (True) and refuse (False). Read-only tools in
+# read-only forms pass; anything that changes, writes, reaches out or is not recognised
+# does not.
+RULE_CASES = [
+    ("whoami /all", True), ("net localgroup administrators", True), ("net start", True),
+    ('net group "Domain Admins" /domain', True), ("wmic os get caption", True),
+    ("netsh advfirewall show allprofiles", True), ("tasklist | findstr svchost", True),
+    (r"reg query HKLM\Software\Microsoft", True), ("schtasks /query /fo list", True),
+    ("netstat -ano && net use", True), ("wevtutil el", True),
+    ("net user bob Pass1", False),                      # sets a password
+    ("net accounts /maxpwage:30", False), ("net share data=C:\\data", False),
+    ("net start spooler", False), ("ipconfig /flushdns", False), ("arp -d", False),
+    ("sc stop wuauserv", False), ("wmic process call create calc", False),
+    ("wevtutil cl Security", False),                    # clears a log
+    ("netsh wlan show profile name=x key=clear", False),  # shows stored passwords
+    (r"reg query HKLM\SAM", False), ('tasklist /fi "imagename eq lsass.exe"', False),
+    ("echo hi > x.txt", False), ("dir & del x", False), ("whoami & cmd /c calc", False),
+    ("powershell -enc AAA", False), ("for /f %i in (x) do echo", False), ("set x=1", False),
+    (r"C:\tools\x.exe", False), ("type C:\\secret.txt", False),
+    ("systeminfo /s srv01", False), ("net view \\\\dc01", False),
+]
+POWERSHELL_CASES = [
+    ("Get-Process", True), ("Get-NetTCPConnection -State Listen", True),
+    ("Get-Process | Stop-Process", False), ("Get-Content C:\\x.txt", False),
+    ("Get-CimInstance Win32_Service -ComputerName dc01", False),
+    ("Invoke-WebRequest http://x", False), ("Get-Date; Remove-Item x", False),
+]
+
+
+def s_librarian_rules():
+    """The librarian's rules: read-only commands pass, everything else is refused."""
+    fails = []
+    for cases, executor in ((RULE_CASES, "command_prompt"), (POWERSHELL_CASES, "powershell")):
+        for command, expected in cases:
+            allowed, why = check_command(command, executor)
+            if bool(allowed) != expected:
+                fails.append(f"{'allowed' if allowed else 'refused'} {command!r} ({'; '.join(why)})")
+            emit("Librarian", f"{'Allowed' if allowed else 'Refused'}: {command}",
+                 detail="" if allowed else "; ".join(why), status="ok" if allowed else "stop")
+    total = len(RULE_CASES) + len(POWERSHELL_CASES)
+    refused = sum(1 for cases in (RULE_CASES, POWERSHELL_CASES) for _, ok in cases if not ok)
+    return fails, f"{total} commands checked: {total - refused} read-only ones allowed, {refused} refused"
+
+
+def survey(path):
+    """How far a public test library file would close the gaps of the action library."""
+    planner = Planner()
+    result = Librarian(path, planner.actions, planner.not_simulated,
+                       Path(tempfile.mkdtemp(prefix="oaev-survey-"))).survey()
+    print(f"{result['techniques']} techniques with {result['tests']} public tests in {path}")
+    for label, n in result["tally"].items():
+        print(f"  {n:5d}  {label}")
+    print("most common reasons a test was refused:")
+    for reason, n in result["top_reasons"]:
+        print(f"  {n:5d}  {reason}")
+    return 0
+
+
 def s_gateways():
     """Email and firewall tests: the mail gateway's and the firewall's own logs, in Splunk, say what happened."""
     ants, fails = Ants(), []
@@ -1591,6 +1812,8 @@ def s_gateways():
 
 
 SCENARIOS = {
+    "librarian": ("Librarian: a missing technique gets a harmless public test", s_librarian),
+    "librarian_rules": ("Librarian: what its rules allow and refuse", s_librarian_rules),
     "gateways": ("Email and firewall tests (Proofpoint and Check Point logs in Splunk)", s_gateways),
     "detection_loop": ("From Missed to Detected: proposal, approval, re-run", s_detection_loop),
     "detection_guards": ("Detection engineer: what it refuses", s_detection_guards),
@@ -1646,6 +1869,8 @@ def main():
     if SCENARIO == "library":
         print(json.dumps(attack_library()))
         sys.exit(0)
+    if SCENARIO == "survey":
+        sys.exit(survey(sys.argv[2] if len(sys.argv) > 2 else str(SAMPLE_ATOMICS)))
     if SCENARIO == "playground_many":
         logging.basicConfig(level=logging.CRITICAL)
         start(SplunkMock, SPLUNK_PORT), start(FalconMock, FALCON_PORT)

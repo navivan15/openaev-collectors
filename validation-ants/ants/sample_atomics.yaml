@@ -1,0 +1,180 @@
+# A small sample in the layout of the Atomic Red Team index (atomics/Indexes/index.yaml):
+# tactic -> technique -> atomic_tests. It exists so the librarian ant can be tried in the
+# sandbox without downloading anything.
+#
+# It is NOT a copy of Atomic Red Team. The entries were written for this sandbox, use
+# ordinary Windows built-in commands, and carry made-up ids. Some are unsafe on purpose,
+# so the librarian's rules have something to refuse. Nothing in this file is ever run:
+# the sandbox's agent is simulated.
+discovery:
+  T1049:
+    technique: {name: System Network Connections Discovery}
+    atomic_tests:
+      - name: List network connections and mapped drives
+        auto_generated_guid: 5a17e000-0000-4000-8000-000000000001
+        description: Lists open connections and mapped drives with built-in tools.
+        supported_platforms: [windows]
+        executor:
+          name: command_prompt
+          elevation_required: false
+          command: |
+            netstat -ano
+            net use
+      - name: List TCP connections with PowerShell
+        auto_generated_guid: 5a17e000-0000-4000-8000-000000000002
+        description: Lists TCP connections.
+        supported_platforms: [windows]
+        executor: {name: powershell, elevation_required: false, command: Get-NetTCPConnection}
+      - name: List connections on Linux
+        auto_generated_guid: 5a17e000-0000-4000-8000-000000000003
+        description: Lists connections.
+        supported_platforms: [linux]
+        executor: {name: sh, elevation_required: false, command: netstat -tunlp}
+  T1007:
+    technique: {name: System Service Discovery}
+    atomic_tests:
+      - name: Save the service list to a file
+        auto_generated_guid: 5a17e000-0000-4000-8000-000000000004
+        description: Writes the list of services to a file in the temp folder.
+        supported_platforms: [windows]
+        input_arguments:
+          output_file: {description: Where to write, type: path, default: '%TEMP%\services.txt'}
+        executor:
+          name: command_prompt
+          elevation_required: false
+          command: 'sc query type= service > #{output_file}'
+          cleanup_command: 'del /f /q #{output_file}'
+      - name: List services
+        auto_generated_guid: 5a17e000-0000-4000-8000-000000000005
+        description: Lists services and the processes that host them.
+        supported_platforms: [windows]
+        executor:
+          name: command_prompt
+          elevation_required: false
+          command: |
+            tasklist /svc
+            sc query state= all
+  T1012:
+    technique: {name: Query Registry}
+    atomic_tests:
+      - name: Save a registry hive
+        auto_generated_guid: 5a17e000-0000-4000-8000-000000000006
+        description: Saves a registry hive to disk.
+        supported_platforms: [windows]
+        executor:
+          name: command_prompt
+          elevation_required: true
+          command: 'reg save HKLM\SYSTEM %TEMP%\system.hiv'
+          cleanup_command: 'del /f /q %TEMP%\system.hiv'
+      - name: Read the run keys
+        auto_generated_guid: 5a17e000-0000-4000-8000-000000000007
+        description: Reads the keys that start programs at logon.
+        supported_platforms: [windows]
+        input_arguments:
+          key: {description: Key to read, type: string, default: 'HKLM\Software\Microsoft\Windows\CurrentVersion\Run'}
+        executor: {name: command_prompt, elevation_required: false, command: 'reg query #{key}'}
+  T1124:
+    technique: {name: System Time Discovery}
+    atomic_tests:
+      - name: Read the time zone
+        auto_generated_guid: 5a17e000-0000-4000-8000-000000000008
+        description: Reads the time zone and the current time.
+        supported_platforms: [windows]
+        executor:
+          name: command_prompt
+          elevation_required: false
+          command: |
+            w32tm /tz
+            time /t
+  T1135:
+    technique: {name: Network Share Discovery}
+    atomic_tests:
+      - name: List the shares of another computer
+        auto_generated_guid: 5a17e000-0000-4000-8000-000000000009
+        description: Lists the shares another computer offers.
+        supported_platforms: [windows]
+        input_arguments:
+          computer_name: {description: Computer to ask, type: string, default: localhost}
+        executor: {name: command_prompt, elevation_required: false, command: 'net view \\#{computer_name}'}
+      - name: List this computer's shares
+        auto_generated_guid: 5a17e000-0000-4000-8000-00000000000a
+        description: Lists the shares this computer offers.
+        supported_platforms: [windows]
+        executor: {name: command_prompt, elevation_required: false, command: net share}
+  T1201:
+    technique: {name: Password Policy Discovery}
+    atomic_tests:
+      - name: Read the account policy
+        auto_generated_guid: 5a17e000-0000-4000-8000-00000000000b
+        description: Reads the local account policy.
+        supported_platforms: [windows]
+        executor: {name: command_prompt, elevation_required: false, command: net accounts}
+      - name: Change the account policy
+        auto_generated_guid: 5a17e000-0000-4000-8000-00000000000c
+        description: Changes the maximum password age.
+        supported_platforms: [windows]
+        executor: {name: command_prompt, elevation_required: true, command: 'net accounts /maxpwage:30'}
+  T1087.002:
+    technique: {name: 'Account Discovery: Domain Account'}
+    atomic_tests:
+      - name: Reset a domain user's password
+        auto_generated_guid: 5a17e000-0000-4000-8000-00000000000d
+        description: Looks like a listing, but sets a password.
+        supported_platforms: [windows]
+        executor: {name: command_prompt, elevation_required: false, command: 'net user alice Winter2026 /domain'}
+      - name: List domain users
+        auto_generated_guid: 5a17e000-0000-4000-8000-00000000000e
+        description: Lists the accounts of the domain.
+        supported_platforms: [windows]
+        executor: {name: command_prompt, elevation_required: false, command: 'net user /domain'}
+persistence:
+  T1053.005:
+    technique: {name: 'Scheduled Task/Job: Scheduled Task'}
+    atomic_tests:
+      - name: Create a scheduled task
+        auto_generated_guid: 5a17e000-0000-4000-8000-00000000000f
+        description: Creates a task that starts a program at logon.
+        supported_platforms: [windows]
+        executor:
+          name: command_prompt
+          elevation_required: false
+          command: 'schtasks /create /tn "Updater" /tr calc.exe /sc onlogon'
+          cleanup_command: 'schtasks /delete /tn "Updater" /f'
+  T1547.001:
+    technique: {name: 'Boot or Logon Autostart Execution: Registry Run Keys'}
+    atomic_tests:
+      - name: Add a run key
+        auto_generated_guid: 5a17e000-0000-4000-8000-000000000010
+        description: Adds a value that starts a program at logon.
+        supported_platforms: [windows]
+        executor:
+          name: command_prompt
+          elevation_required: false
+          command: 'reg add HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /d calc.exe /f'
+          cleanup_command: 'reg delete HKCU\Software\Microsoft\Windows\CurrentVersion\Run /v Updater /f'
+collection:
+  T1560.001:
+    technique: {name: 'Archive Collected Data: Archive via Utility'}
+    atomic_tests:
+      - name: Pack files with a downloaded archiver
+        auto_generated_guid: 5a17e000-0000-4000-8000-000000000011
+        description: Downloads an archiver and packs a folder.
+        supported_platforms: [windows]
+        dependencies:
+          - description: The archiver must be present
+            prereq_command: 'if (Test-Path C:\Tools\7z.exe) {exit 0} else {exit 1}'
+            get_prereq_command: 'Invoke-WebRequest https://example.invalid/7z.exe -OutFile C:\Tools\7z.exe'
+        executor:
+          name: command_prompt
+          elevation_required: false
+          command: 'C:\Tools\7z.exe a %TEMP%\data.7z %USERPROFILE%\Documents'
+          cleanup_command: 'del /f /q %TEMP%\data.7z'
+credential-access:
+  T1003.001:
+    technique: {name: 'OS Credential Dumping: LSASS Memory'}
+    atomic_tests:
+      - name: Find the LSASS process
+        auto_generated_guid: 5a17e000-0000-4000-8000-000000000012
+        description: Looks harmless, but belongs to a family the ants refuse.
+        supported_platforms: [windows]
+        executor: {name: command_prompt, elevation_required: false, command: 'tasklist /fi "imagename eq lsass.exe"'}
