@@ -1,0 +1,2 @@
+# Shell scripts run inside Linux (WSL); keep their line endings as LF on every machine.
+*.sh text eol=lf
