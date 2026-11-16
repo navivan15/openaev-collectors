@@ -44,6 +44,17 @@ _ARGUMENT_RE = re.compile(r"^[A-Za-z0-9 _.:\\/\-*%]{0,120}$")
 _WORD_RE = re.compile(r'"[^"]*"|\S+')
 
 
+# Tactics the librarian and the drafter never work on. A read-only command changes nothing,
+# but in these tactics reading is the harm: the output is passwords, secrets or people's data.
+REFUSED_TACTICS = {
+    "credential-access": "Reading passwords and other sign-in secrets is not something the ants do, "
+                         "even to imitate an attack.",
+    "collection": "Gathering people's files, screens or keystrokes is not something the ants do, "
+                  "even to imitate an attack.",
+    "exfiltration": "Taking data out of the network is not something the ants do, even to imitate an attack.",
+}
+
+
 class LibrarianError(ValueError):
     """A draft or an approval was refused."""
 
@@ -59,6 +70,8 @@ _FORBIDDEN: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\\\\"), "reaches another machine"),
     (re.compile(r"lsass|mimikatz|procdump|ntds|\\sam\b|\\security\b|passw|credential|"
                 r"key=clear|cpassword|vaultcmd", re.I), "touches passwords or credentials"),
+    (re.compile(r"c:\\users|%userprofile%|%appdata%|%localappdata%|%homepath%|\\documents\b|\\desktop\b|"
+                r"\\downloads\b|\\favorites\b", re.I), "looks through people's own folders"),
     (re.compile(r"(?<!\w)/(add|delete|del|create|change|active|purge|flush\w*|renew|release|"
                 r"register\w*|run|end|f|maxpwage|minpwage|minpwlen|uniquepw|lockout\w*)\b", re.I),
      "changes something"),
@@ -90,6 +103,28 @@ def _only_flags(*allowed: str) -> Callable[[str], str | None]:
         extra = [w for w in _words(args.lower()) if w not in allowed]
         return f"'{extra[0]}' is not one of its read-only options" if extra else None
     return rule
+
+
+def _exactly(*allowed: str) -> Callable[[str], str | None]:
+    def rule(args: str) -> str | None:
+        return None if _words(args.lower()) == list(allowed) else \
+            f"is only harmless as '{' '.join(allowed)}' (the bare form waits for input and can change the setting)"
+    return rule
+
+
+def _reg(args: str) -> str | None:
+    words = _words(args.lower())
+    if not words or words[0] != "query":
+        return "only its read-only forms are allowed (query)"
+    # '/s' reads a whole branch, which is how saved sessions and secrets get swept up.
+    return "'/s' reads a whole registry branch" if "/s" in words else None
+
+
+def _query(args: str) -> str | None:
+    words = _words(args.lower())
+    if not words or words[0] not in ("user", "session", "process"):
+        return "only its read-only forms are allowed (user, session, process)"
+    return _not_remote(args)
 
 
 def _not_remote(args: str) -> str | None:
@@ -142,7 +177,8 @@ def _nltest(args: str) -> str | None:
 
 # Tool -> rule for its arguments. A tool that is not here is refused.
 CMD_TOOLS: dict[str, Callable[[str], str | None]] = {
-    "whoami": _any, "hostname": _bare, "ver": _bare, "set": _bare, "chcp": _bare,
+    # 'set' is not here: it prints the whole environment, which can hold secrets.
+    "whoami": _any, "hostname": _bare, "ver": _bare, "chcp": _bare,
     "systeminfo": _not_remote, "tasklist": _not_remote, "getmac": _not_remote,
     "driverquery": _not_remote, "qwinsta": _not_remote, "quser": _not_remote,
     "netstat": _any, "dir": _any, "tree": _any, "where": _any, "echo": _any, "dsquery": _any,
@@ -150,11 +186,11 @@ CMD_TOOLS: dict[str, Callable[[str], str | None]] = {
     "arp": _only_flags("-a", "-g"),
     "route": _only_flags("print"),
     "gpresult": _only_flags("/r", "/z", "/v"),
-    "time": _only_flags("/t"), "date": _only_flags("/t"),
+    "time": _exactly("/t"), "date": _exactly("/t"),
     "w32tm": _first_in("/tz", "/query"),
     "fsutil": _first_in("fsinfo"),
-    "query": _first_in("user", "session", "process"),
-    "reg": _first_in("query"),
+    "query": _query,
+    "reg": _reg,
     "sc": _first_in("query", "queryex", "qc"),
     "wevtutil": _first_in("el", "enum-logs", "gl", "get-log", "gli", "get-loginfo"),
     "net": _net, "wmic": _wmic, "netsh": _netsh, "schtasks": _schtasks, "nltest": _nltest,
@@ -284,7 +320,8 @@ class Librarian:
                     continue
                 known = self.by_technique.setdefault(str(technique), {
                     "name": str((entry.get("technique") or {}).get("name") or technique),
-                    "tactic": str(tactic), "tests": []})
+                    "tactic": str(tactic), "tactics": set(), "tests": []})
+                known["tactics"].add(str(tactic))          # a technique can sit under several tactics
                 seen = {t.get("auto_generated_guid") for t in known["tests"]}
                 known["tests"] += [t for t in entry.get("atomic_tests") or []
                                    if isinstance(t, dict) and t.get("auto_generated_guid") not in seen]
@@ -314,14 +351,21 @@ class Librarian:
 
     # -- checks ---------------------------------------------------------------
 
-    def _refused_family(self, technique: str) -> str | None:
-        return self.not_simulated.get(technique) or self.not_simulated.get(technique.split(".", 1)[0])
+    def _refused_family(self, technique: str, tactic: str | None = None) -> str | None:
+        """Why this technique is never worked on, or None. By family, and by tactic."""
+        family = self.not_simulated.get(technique) or self.not_simulated.get(technique.split(".", 1)[0])
+        if family:
+            return family
+        tactics = set((self.by_technique.get(technique) or {}).get("tactics") or ())
+        if tactic:
+            tactics.add(tactic)
+        return next((REFUSED_TACTICS[t] for t in sorted(tactics) if t in REFUSED_TACTICS), None)
 
     def _problems(self, draft: dict[str, Any]) -> list[str]:
         """Everything that must still hold for a stored draft. Empty means fine."""
         action = draft.get("action") or {}
         problems = []
-        if self._refused_family(str(draft.get("technique"))):
+        if self._refused_family(str(draft.get("technique")), str(draft.get("tactic") or "")):
             problems.append("its technique is in a family the ants refuse")
         checked, reasons = check_command(str(draft.get("source_command") or ""),
                                          str(draft.get("executor") or ""))
@@ -391,7 +435,7 @@ class Librarian:
 
         The command is checked here again, so nothing reaches the store unchecked.
         """
-        if not _TECHNIQUE_RE.match(technique) or self._refused_family(technique):
+        if not _TECHNIQUE_RE.match(technique) or self._refused_family(technique, tactic):
             raise LibrarianError(f"No draft can be written for {technique}")
         checked, reasons = check_command(command, executor)
         if checked is None:
@@ -460,14 +504,22 @@ class Librarian:
 
     def survey(self) -> dict[str, Any]:
         """How far the public library would close the gaps. Writes nothing."""
-        tally = {"already in the library": 0, "refused family": 0, "harmless test found": 0,
+        tally = {"already in the library": 0, "refused family": 0, "no public test at all": 0,
+                 "public tests, but none for Windows": 0, "harmless test found": 0,
                  "nothing harmless found": 0}
         reasons: dict[str, int] = {}
+        found_by_tactic: dict[str, int] = {}
         for technique, entry in sorted(self.by_technique.items()):
+            windows = [t for t in entry["tests"]
+                       if "windows" in [str(p).lower() for p in t.get("supported_platforms") or []]]
             if any(technique in a.get("techniques", []) for a in self.actions.values()):
                 tally["already in the library"] += 1
             elif self._refused_family(technique):
                 tally["refused family"] += 1
+            elif not entry["tests"]:
+                tally["no public test at all"] += 1
+            elif not windows:
+                tally["public tests, but none for Windows"] += 1
             else:
                 found = False
                 for test in entry["tests"]:
@@ -477,7 +529,9 @@ class Librarian:
                         key = re.sub(r"'[^']*'", "'...'", r)
                         reasons[key] = reasons.get(key, 0) + 1
                 tally["harmless test found" if found else "nothing harmless found"] += 1
-        return {"techniques": len(self.by_technique),
+                if found:
+                    found_by_tactic[entry["tactic"]] = found_by_tactic.get(entry["tactic"], 0) + 1
+        return {"techniques": len(self.by_technique), "found_by_tactic": found_by_tactic,
                 "tests": sum(len(e["tests"]) for e in self.by_technique.values()),
                 "tally": tally,
                 "top_reasons": sorted(reasons.items(), key=lambda kv: -kv[1])[:10]}

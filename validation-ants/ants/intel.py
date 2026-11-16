@@ -29,7 +29,8 @@ THREAT_TYPES = ("intrusion-set", "threat-actor", "campaign", "malware", "report"
 # ATT&CK tactic order, used to put a scenario's steps in a believable sequence.
 TACTIC_ORDER = [
     "reconnaissance", "resource-development", "initial-access", "execution",
-    "persistence", "privilege-escalation", "defense-evasion", "credential-access",
+    "persistence", "privilege-escalation", "defense-evasion", "stealth", "defense-impairment",
+    "credential-access",
     "discovery", "lateral-movement", "collection", "command-and-control",
     "exfiltration", "impact",
 ]

@@ -246,8 +246,9 @@ looks for a public test and drafts an action from it. It does not invent a test 
    without a name, or when the rules no longer pass. Approved actions are loaded with `Planner.add_actions`, and
    each time they are loaded the rules are checked again and a draft changed after its approval is dropped.
 
-A technique in a refused family (credential dumping, log removal and so on) is never looked up, even when the public
-library has a harmless-looking test for it. A technique with only tests that change something stays a gap for the
+A technique in a refused family (credential dumping, log removal and so on) or a refused tactic (credential
+access, collection, exfiltration: reading is the harm there) is never looked up, even when the public library has a
+harmless-looking test for it. A technique with only tests that change something stays a gap for the
 librarian; the drafter (below) is called for those.
 
 ```shell
@@ -258,8 +259,35 @@ splunk-es/.venv/Scripts/python validation-ants/sandbox.py survey FILE        # h
 
 The sandbox uses `ants/sample_atomics.yaml`: 18 entries written for it, in the same layout, some unsafe on purpose.
 It is not a copy of Atomic Red Team. With it, a scenario of ten techniques goes from 1 testable to 6: five drafts,
-two techniques with only tests that change something, one not in the library, one refused family. How many gaps the
-real Atomic Red Team index would close has not been measured: that needs the real file, which `survey` reads.
+two techniques with only tests that change something, one not in the library, one refused family.
+
+**Measured against the real Atomic Red Team index** (downloaded 2026-11-15, 6.8 MB, kept outside the repository and
+read as data; nothing in it was run): 697 techniques, 1,950 public tests.
+
+| Of the 697 techniques | |
+|---|---|
+| Already in the action library | 15 |
+| Refused: a family or a tactic the ants never work on | 134 |
+| No public test at all | 290 |
+| Public tests, but none for Windows | 56 |
+| **A harmless public test found** | **14** |
+| Windows tests exist, none harmless by the rules | 188 |
+
+All 14 are discovery techniques (listing scheduled tasks, shares, the password policy, drives, the time zone and
+so on). Each was drafted and passed its sandbox trial; none is approved, because that is a person's step. The
+library would go from 15 techniques to 29.
+
+What this says plainly: a public test that only reads exists almost only for discovery. For the other attack
+types the public tests change the system (they create a task, add a registry value, install something), so the
+rules refuse them. Those are the 188, and they are what the drafter is for, with the limit that a read-only
+imitation is a partial test.
+
+Reading what the rules accepted from the real file also found things the sample had not, now fixed and in
+`librarian_rules`: bare `time` and `date` wait for input and can set the clock; `set` prints the whole
+environment, which can hold secrets; `reg query ... /s` sweeps up a whole branch (saved PuTTY sessions, in the
+real case); `query user /server:` asks another machine; and three tests listed files in people's own folders.
+The same reading is why the tactics credential access, collection and exfiltration are now refused outright:
+there, reading is the harm.
 
 The rules are deliberately narrow. They will refuse harmless tests they do not recognise (most PowerShell, anything
 with a pipe into a script block, anything that reads a file). Widening them is a reviewed change to the rule tables

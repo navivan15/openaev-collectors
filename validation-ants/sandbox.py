@@ -1744,6 +1744,13 @@ RULE_CASES = [
     ("powershell -enc AAA", False), ("for /f %i in (x) do echo", False), ("set x=1", False),
     (r"C:\tools\x.exe", False), ("type C:\\secret.txt", False),
     ("systeminfo /s srv01", False), ("net view \\\\dc01", False),
+    # Found by reading what the rules accepted from the real public library:
+    ("time", False), ("date", False),                   # the bare form waits for input and can set the clock
+    ("time /t", True),
+    ("set", False),                                     # prints the environment, which can hold secrets
+    ("query user", True), ("query user /SERVER:srv01", False),
+    (r"reg query HKCU\Software\SimonTatham\PuTTY\Sessions /t REG_SZ /s", False),   # sweeps up saved sessions
+    (r"where /R C:\Users\ Bookmarks", False), (r"dir /s /b %USERPROFILE%\Favorites", False),
 ]
 POWERSHELL_CASES = [
     ("Get-Process", True), ("Get-NetTCPConnection -State Listen", True),
@@ -1793,7 +1800,7 @@ MODEL_SCRIPT = {
     "T1547.001": [r'{"command": "reg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", '
                   r'"why": "Reads the key a logon autostart would be written to"}'],
     # Never gives a usable answer: chat text, a smuggled second command, then something that deletes.
-    "T1560.001": ["Sure! Here is a command you can use: tar -cf data.tar Documents",
+    "T1112": ["Sure! Here is a command you can use: reg add HKCU\\Software\\Test /v x /d 1",
                   '{"command": "whoami & powershell -enc SQBFAFgA", "why": "x"}',
                   r'{"command": "dir C:\\Users & del C:\\Users\\x", "why": "x"}'],
     "T1999": ['{"command": null, "why": "I do not know a read-only way to imitate this"}'],
@@ -1811,6 +1818,7 @@ def s_drafter():
               ("T1049", "System Network Connections Discovery", "discovery"),
               ("T1053.005", "Scheduled Task", "persistence"),
               ("T1547.001", "Registry Run Keys", "persistence"),
+              ("T1112", "Modify Registry", "defense-impairment"),
               ("T1560.001", "Archive via Utility", "collection"),
               ("T1003.001", "LSASS Memory", "credential-access"),
               ("T1999", "A technique no public test covers", "discovery")]
@@ -1855,11 +1863,11 @@ def s_drafter():
     ants.run(first, [HOST1], label="before: what the library can test today", scenario=box)
     asked = box["asked"]
     status = {t: a["status"] for t, a in asked.items()}
-    if status != {"T1053.005": "draft", "T1547.001": "draft", "T1560.001": "refused by the rules",
+    if status != {"T1053.005": "draft", "T1547.001": "draft", "T1112": "refused by the rules",
                   "T1999": "model declined"}:
         fails.append(f"drafter results {status}")
     tries = {t: [x["verdict"] for x in a["tries"]] for t, a in asked.items()}
-    if tries.get("T1053.005") != ["refused", "passed"] or tries.get("T1560.001") != ["refused"] * 3:
+    if tries.get("T1053.005") != ["refused", "passed"] or tries.get("T1112") != ["refused"] * 3:
         fails.append(f"model answers were judged {tries}")
     if drafter.calls != 7:
         fails.append(f"the model was called {drafter.calls} times, expected 7")
@@ -1867,9 +1875,14 @@ def s_drafter():
     if leaked:
         fails.append("the request to the model carries the scenario's name or a host")
     before = drafter.calls
-    for technique, expected in (("T1003.001", "refused family"), ("T1082", "already in the library"),
-                                ("T1049", "draft")):
-        got = drafter.draft(technique, "x", "discovery")["status"]
+    # Never sent to the model: a refused family, a refused tactic (collection), a technique
+    # that is only in a refused tactic because the scenario says so, a covered one, a drafted one.
+    for technique, tactic, expected in (("T1003.001", "credential-access", "refused family"),
+                                        ("T1560.001", "collection", "refused family"),
+                                        ("T1999", "exfiltration", "refused family"),
+                                        ("T1082", "discovery", "already in the library"),
+                                        ("T1049", "discovery", "draft")):
+        got = drafter.draft(technique, "x", tactic)["status"]
         if got != expected or drafter.calls != before:
             fails.append(f"the model was asked about {technique} ({got})")
     if librarian.approved_actions():
@@ -1889,7 +1902,7 @@ def s_drafter():
     cover = {}
     for c in box["draft"]["coverage"]:
         cover[c["status"]] = cover.get(c["status"], 0) + 1
-    if cover != {"simulated": 2, "partial": 2, "not simulated": 1, "no action": 2}:
+    if cover != {"simulated": 2, "partial": 2, "not simulated": 1, "no action": 3}:
         fails.append(f"coverage after approval {cover}")
     if len(r2["steps"]) != 4 or r2["not_run"] or not r2["audit_intact"]:
         fails.append(f"{len(r2['steps'])} step(s) scored after approval, {len(r2['not_run'])} not run")
@@ -1906,6 +1919,9 @@ def survey(path):
     print(f"{result['techniques']} techniques with {result['tests']} public tests in {path}")
     for label, n in result["tally"].items():
         print(f"  {n:5d}  {label}")
+    print("harmless test found, by attack type:")
+    for tactic, n in sorted(result["found_by_tactic"].items(), key=lambda kv: -kv[1]):
+        print(f"  {n:5d}  {tactic}")
     print("most common reasons a test was refused:")
     for reason, n in result["top_reasons"]:
         print(f"  {n:5d}  {reason}")

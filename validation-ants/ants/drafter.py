@@ -99,6 +99,10 @@ class Drafter:
                                "why": "", "draft_id": None, "command": None, "model": self.model_name,
                                "tries": []}
         known = self.librarian.find(technique)
+        refused = self.librarian._refused_family(technique, tactic)
+        if refused:
+            # By family or by tactic: the model is not asked.
+            return {**out, "status": "refused family", "why": refused}
         if known["status"] in ("already in the library", "refused family", "not a technique id",
                                "draft", "approved"):
             # Nothing to ask a model: covered, refused for good, or already drafted.
