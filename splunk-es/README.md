@@ -373,9 +373,12 @@ The page has three views.
   every ant (planner, gatekeeper, agent, both observers, analyst, matcher, detection engineer, reporter). The
   scorecard breaks the result down by attack type and shows the analyst's search-change log and the gatekeeper's audit
   log. The `validation-ants` scenarios are listed with the collector's under "All checks".
-- **Ant map.** Every ant as a station on a map, with its icon and colour, in the order work passes between them.
-  An ant lights up while it is the one working on a running job, the line into it animates, and its current task
-  is shown under it. A panel lists all the ants with what each is doing and how many tasks it has done.
+- **Ant map.** Every ant as a small ant figure on a map, in its own colour and wearing the badge of its job, in
+  the order work passes between them. An ant is grey while it is idle; it turns to its colour and moves while it
+  is the one working on a running job, the line into it animates, and its current task is shown under it. Hovering
+  over an ant (or tabbing to it) shows what it does, its rule, who it gets work from and hands it to, whether it
+  uses a model, and its numbers for the session. A panel lists all the ants with the same state. The AI drafter is
+  on the map and lights up only when it is called.
 
 The demo proves the logic on synthetic data. It does not prove how a real Falcon tenant behaves. The index check,
 the marker search, the repeat-run narrow search and the trace's Falcon alert id have also been run against a real

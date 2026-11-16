@@ -298,33 +298,53 @@ td.mono { font-family: var(--mono); font-size: 13.5px; white-space: nowrap; }
 @keyframes dash { to { stroke-dashoffset: -18; } }
 .adot { fill: var(--accent); visibility: hidden; }
 .adot.live { visibility: visible; }
-.adisc { fill: var(--panel); stroke: var(--line); stroke-width: 2.5; }
-.aring { fill: none; stroke: var(--ac); stroke-width: 3; opacity: 0; transform-box: fill-box; transform-origin: center; }
-.aicon path { fill: none; stroke: var(--faint); stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
-.anode.used .adisc { stroke: color-mix(in srgb, var(--ac) 55%, var(--line)); }
-.anode.used .aicon path { stroke: var(--ac); }
-.anode.working .adisc { stroke: var(--ac); fill: color-mix(in srgb, var(--ac) 16%, var(--panel)); }
+.aring { fill: color-mix(in srgb, var(--ac) 14%, transparent); stroke: var(--ac); stroke-width: 3; opacity: 0;
+  transform-box: fill-box; transform-origin: center; }
+.anode { cursor: pointer; outline: none; }
+.anode:focus-visible .aring { opacity: 1; stroke-dasharray: 5 5; }
+/* The ant: grey when it is not working, in its own colour when it is. */
+.avatar { filter: grayscale(1); opacity: .42; transition: filter .25s, opacity .25s; transform-box: fill-box; transform-origin: center; }
+.anode.used .avatar, .wrow.used .avatar, .antcard.used .avatar { opacity: .6; }
+.anode.working .avatar, .wrow.working .avatar, .antcard.working .avatar { filter: none; opacity: 1; }
+.antcard.working .wchip { background: var(--ac); color: #fff; }
+.anode.working .avatar { animation: bob .9s ease-in-out infinite; }
+.anode.pulse:not(.working) .avatar { animation: wake .9s ease-out; }
 .anode.working .aring { animation: ring 1.3s ease-out infinite; }
-.anode.pulse .adisc { animation: flash 0.7s ease-out; }
-@keyframes ring { 0% { opacity: .9; transform: scale(.8); } 100% { opacity: 0; transform: scale(1.25); } }
-@keyframes flash { 0% { fill: color-mix(in srgb, var(--ac) 42%, var(--panel)); } 100% { fill: var(--panel); } }
+.abody { fill: color-mix(in srgb, var(--ac) 80%, #000); }
+.ahead { fill: var(--ac); }
+.aleg, .aant { fill: none; stroke: color-mix(in srgb, var(--ac) 68%, #000); stroke-width: 3.2; stroke-linecap: round; }
+.atip { fill: color-mix(in srgb, var(--ac) 68%, #000); }
+.aeye { fill: #fff; } .apupil { fill: #14161c; } .abadge { fill: #fff; }
+.aicon path { fill: none; stroke: color-mix(in srgb, var(--ac) 78%, #000); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+@keyframes ring { 0% { opacity: .9; transform: scale(.8); } 100% { opacity: 0; transform: scale(1.2); } }
+@keyframes bob { 50% { transform: translateY(-4px); } }
+@keyframes wake { 0% { filter: none; opacity: 1; } 100% { filter: grayscale(1); opacity: .6; } }
+.mapcard { position: relative; }
+.antcard { position: absolute; z-index: 5; width: 350px; background: var(--panel); border: 1.5px solid var(--ac); border-radius: 14px;
+  padding: 14px 16px; box-shadow: 0 10px 30px rgba(8, 12, 24, .22); pointer-events: none; display: grid; gap: 8px; font-size: 14.5px; }
+.antcard .ct { display: flex; align-items: center; gap: 10px; }
+.antcard .ct b { font-size: 18px; flex: 1; }
+.antcard .wav { width: 40px; height: 52px; flex: none; }
+.antcard .cstats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.antcard .cstat { background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 9px; padding: 6px 8px; text-align: center; }
+.antcard .cstat b { display: block; font-size: 20px; line-height: 1.15; }
+.antcard .cstat span { font-size: 12px; color: var(--muted); }
+.antcard dl { margin: 0; display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 4px 10px; }
+.antcard dt { color: var(--faint); font-weight: 600; } .antcard dd { margin: 0; }
+.wav { width: 38px; height: 50px; display: block; margin: 0 auto; overflow: visible; }
 .acount { visibility: hidden; }
+.ashadow { fill: var(--line-2); }
 .anode.working .acount { visibility: visible; }
 .acount circle { fill: var(--ac); }
 .acount text { fill: #fff; font: 700 13px var(--sans); text-anchor: middle; dominant-baseline: central; }
 .alabel { text-align: center; font: 13.5px/1.3 var(--sans); color: var(--muted); }
 .alabel b { display: block; font-size: 15.5px; color: var(--text); background: var(--panel); width: fit-content; margin: 0 auto; padding: 0 6px; border-radius: 6px; }
-.alabel span { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; background: var(--panel); border-radius: 6px; }
+.alabel span { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; background: var(--panel); border-radius: 6px; }
 .anode.working .alabel span { color: var(--text); }
 .workers > header { border-bottom: 1px solid var(--line-2); }
 .wrow { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 11px 16px; border-top: 1px solid var(--line-2); }
 .wrow:first-child { border-top: 0; }
-.wicon { width: 44px; height: 44px; border-radius: 12px; display: grid; place-items: center; border: 1.5px solid var(--line);
-  background: var(--panel-2); color: var(--faint); }
-.wicon svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.9; stroke-linecap: round; stroke-linejoin: round; }
-.wrow.used .wicon { color: var(--ac); border-color: color-mix(in srgb, var(--ac) 55%, var(--line)); }
 .wrow.working { background: color-mix(in srgb, var(--ac) 9%, var(--panel)); }
-.wrow.working .wicon { background: var(--ac); border-color: var(--ac); color: #fff; }
 .wname { font-weight: 700; font-size: 16px; }
 .wrole { color: var(--muted); font-size: 14px; }
 .wtask { font-size: 14.5px; margin-top: 3px; overflow-wrap: anywhere; }
@@ -334,7 +354,7 @@ td.mono { font-family: var(--mono); font-size: 13.5px; white-space: nowrap; }
   background: var(--line-2); color: var(--muted); }
 .wrow.working .wchip { background: var(--ac); color: #fff; }
 .wrow.working .wchip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; animation: pulse 1.1s ease-in-out infinite; }
-@media (prefers-reduced-motion: reduce) { .aedge.live, .anode.working .aring, .anode.pulse .adisc, .wrow.working .wchip::before { animation: none; }
+@media (prefers-reduced-motion: reduce) { .aedge.live, .anode.working .aring, .anode.working .avatar, .anode.pulse:not(.working) .avatar, .wrow.working .wchip::before { animation: none; }
   .anode.working .aring { opacity: .7; } .adot.live { visibility: hidden; } }
 @media (max-width: 1250px) { .antwrap { grid-template-columns: 1fr; } }
 
@@ -428,7 +448,7 @@ td.mono { font-family: var(--mono); font-size: 13.5px; white-space: nowrap; }
     <div class="card strip" id="antStrip"></div>
     <div class="antwrap">
       <div class="card mapcard"><div class="mapscroll">
-        <svg id="antMap" viewBox="0 0 1180 730" role="img" aria-label="Map of the ants and how work passes between them"></svg>
+        <svg id="antMap" viewBox="0 0 1180 715" role="img" aria-label="Map of the ants and how work passes between them"></svg>
       </div></div>
       <aside class="card workers" aria-label="Ant workers"><header><h3>Ant workers</h3><span class="sub" id="workersSub"></span></header>
         <div id="workers"></div></aside>
@@ -527,6 +547,7 @@ const FEATURED = [
   ["playground", "Blind playground", "Random steps, hidden defences and decoy alerts. A referee checks every call the ants make."],
   ["detection_loop", "From Missed to Detected", "A missed step gets a tested detection proposal. A person approves and deploys it, and the re-run catches the step."],
   ["librarian", "Fill a gap in the library", "A scenario names techniques with no action. The librarian finds harmless public tests, tries them, and a person approves them."],
+  ["drafter", "Call the AI drafter", "No public test fits, so a model is asked for a read-only one. Its answers go through the same rules. Here the model is a scripted stand-in."],
   ["gateways", "Email and firewall tests", "A marked test email and marked web requests. The mail gateway's and the firewall's own logs, in Splunk, say blocked or let through."],
 ];
 
@@ -663,8 +684,8 @@ async function runSelection() {
 /* ====================================================================== reading a job */
 const DELAY = { ant: 430, run_start: 260, run_end: 320, cycle_start: 320, index_check: 280, search: 430, rows: 340, cycle_end: 320,
   validator: 300, template: 300, harness: 120 };
-const ANTS = ["Library", "Intel", "Scenario builder", "Librarian", "Planner", "Gatekeeper", "Agent", "Splunk observer", "Falcon observer", "Analyst", "Matcher", "Detection engineer", "Reporter", "Referee"];
-const OPTIONAL_ANTS = ["Library", "Intel", "Scenario builder", "Librarian", "Detection engineer", "Referee"];
+const ANTS = ["Library", "Intel", "Scenario builder", "Librarian", "Drafter", "Planner", "Gatekeeper", "Agent", "Splunk observer", "Falcon observer", "Analyst", "Matcher", "Detection engineer", "Reporter", "Referee"];
+const OPTIONAL_ANTS = ["Library", "Intel", "Scenario builder", "Librarian", "Drafter", "Detection engineer", "Referee"];
 const PROPOSAL_CLASS = { "ready for review": "det", "too noisy": "cnc", "does not catch": "mis", "deployed, but did not fire": "bad" };
 const COVERAGE_CLASS = { simulated: "det", partial: "prv", "not simulated": "cnc", "no action": "mis" };
 const STAGE_OF = { Step: 1, Memory: 1, "Query writer": 2, Validator: 3, Splunk: 4, Collector: 4, Matcher: 5, Outcome: 6, Evidence: 6 };
@@ -806,6 +827,14 @@ function antDetail(e) {
     d.techniques.map((t) => el("span", { class: "tactic", style: `--tc:${tacticOf(t.tactic)[1]}`, title: tacticOf(t.tactic)[0] }, el("i"), `${t.id} ${t.name}`))));
   if (e.ant === "Scenario builder" && d && d.coverage) out.push(el("div", { class: "kv" },
     d.coverage.map((c) => el("span", {}, el("i", { text: c.technique + " " }), c.status))));
+  if (e.ant === "Drafter" && Array.isArray(d)) out.push(el("div", { class: "tbl-wrap", style: "margin-top:8px" }, el("table", {},
+    el("thead", {}, el("tr", {}, ["Technique", "Result", "What the model answered, and what the rules said"].map((h) => el("th", { text: h })))),
+    el("tbody", {}, d.map((f) => el("tr", {},
+      el("td", {}, b(f.technique), el("div", { class: "d", text: f.name || "" })),
+      el("td", {}, el("span", { class: "chip " + ({ draft: "prv", "model declined": "neu", "refused by the rules": "mis" }[f.status] || "cnc"), text: f.status })),
+      el("td", {}, f.command ? el("div", { class: "spl", text: f.command }) : null, f.why ? el("div", { class: "d", text: f.why }) : null,
+        (f.tries || []).map((t) => el("div", { class: "d" }, b(`Answer ${t.attempt}, ${t.verdict}: `), t.answer,
+          t.why && t.why.length ? ` (${t.why.join("; ")})` : "")))))))));
   if (e.ant === "Librarian" && Array.isArray(d)) out.push(el("div", { class: "tbl-wrap", style: "margin-top:8px" }, el("table", {},
     el("thead", {}, el("tr", {}, ["Technique", "Result", "Draft action, or why not"].map((h) => el("th", { text: h })))),
     el("tbody", {}, d.map((f) => el("tr", {},
@@ -999,7 +1028,8 @@ function scoreCard(end, label) {
   const dp = r.detection_proposals || {};
   if ((dp.proposals || []).length) table(`Detection proposals for the missed steps (tested on ${dp.events_checked} endpoint log entries; a person must approve and deploy)`,
     ["Detection", "Result of the test", "Catches", "Noise on normal work", "Starting-point search"], dp.proposals.map((p) => el("tr", {},
-      el("td", {}, b(p.title), el("div", { class: "d", text: p.why })),
+      el("td", {}, b(p.title), p.origin && p.origin !== "library" ? el("div", {}, el("span", { class: "tag narrow", text: p.origin })) : null,
+        el("div", { class: "d", text: p.why })),
       el("td", {}, el("span", { class: "chip " + (PROPOSAL_CLASS[p.status] || "neu"), text: p.status })),
       el("td", {}, `${p.caught} of ${p.of} missed steps`, el("div", { class: "d", text: p.covers.map((c) => c.technique).join(", ") })),
       el("td", {}, p.noise ? `${p.noise} time(s) in ${p.baseline_hours} h` : `none in ${p.baseline_hours} h`,
@@ -1383,26 +1413,45 @@ const ICONS = {
   wrench: "M15 4a5 5 0 0 0-4.6 6.9L4 17.3V20h2.7l6.4-6.4A5 5 0 0 0 20 9l-3 3-3-3 3-3a5 5 0 0 0-2-2z",
   file: "M7 3h8l4 4v14H7zM15 3v4h4M10 12h6M10 16h6",
   flag: "M5 21V4M5 4h11l-2 4 2 4H5",
+  spark: "M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8zM18.5 15.5l.9 2.1 2.1.9-2.1.9-.9 2.1-.9-2.1-2.1-.9 2.1-.9z",
 };
 const ROSTER = [
-  { id: "Intel", role: "Reads a threat scenario from OpenCTI", color: "#0ea5e9", icon: "radar", x: 110, y: 80 },
-  { id: "Scenario builder", role: "Turns the scenario's techniques into tests", color: "#6366f1", icon: "blocks", x: 350, y: 80 },
-  { id: "Librarian", role: "Finds a harmless public test for a technique with no action", color: "#a855f7", icon: "book", x: 350, y: 250 },
-  { id: "Planner", role: "Makes the steps and gives each one a marker", color: "#14b8a6", icon: "list", x: 590, y: 80 },
-  { id: "Gatekeeper", role: "Signs what is in scope and refuses the rest", color: "#ef4444", icon: "shield", x: 830, y: 80 },
-  { id: "Agent", role: "Runs the step on the host (simulated here)", color: "#f97316", icon: "terminal", x: 1070, y: 80 },
-  { id: "Location memory", role: "Remembers where each test was found before", color: "#ca8a04", icon: "pin", x: 110, y: 250 },
-  { id: "Query writer", role: "Writes the Splunk search from checked templates", color: "#ec4899", icon: "pen", x: 110, y: 420 },
-  { id: "Validator", role: "Refuses any search that is not read-only", color: "#16a34a", icon: "check", x: 350, y: 420 },
-  { id: "Splunk observer", role: "Reads Splunk and ties alerts and logs to steps", color: "#65a30d", icon: "search", x: 590, y: 420 },
-  { id: "Falcon observer", role: "Reads CrowdStrike Falcon alerts", color: "#e11d48", icon: "eye", x: 830, y: 420 },
-  { id: "Analyst", role: "Records how each search changed, and why", color: "#0891b2", icon: "chart", x: 350, y: 590 },
-  { id: "Matcher", role: "Joins what the tools saw into one verdict per step", color: "#8b5cf6", icon: "link", x: 590, y: 590 },
-  { id: "Detection engineer", role: "Tests a detection for each missed step", color: "#c026d3", icon: "wrench", x: 830, y: 590 },
-  { id: "Reporter", role: "Scores the run and compares it with the last one", color: "#2563eb", icon: "file", x: 1070, y: 590 },
-  { id: "Referee", role: "Checks the ants' calls in the blind playground", color: "#78716c", icon: "flag", x: 1070, y: 420 },
+  { id: "Intel", role: "Reads a threat scenario from OpenCTI", color: "#0ea5e9", icon: "radar", x: 110, y: 80,
+    rule: "Reads only. A pattern with no ATT&CK id is left out and counted." },
+  { id: "Scenario builder", role: "Turns the scenario's techniques into tests", color: "#6366f1", icon: "blocks", x: 350, y: 80,
+    rule: "Builds only from actions on the allow-list. A person approves the scenario before it can run." },
+  { id: "Librarian", role: "Finds a harmless public test for a technique with no action", color: "#a855f7", icon: "book", x: 350, y: 250,
+    rule: "Only read-only public tests pass its rules. A person approves each new action." },
+  { id: "Drafter", name: "AI drafter", role: "Asks a model for a read-only test when no public test fits", color: "#d97706", icon: "spark", x: 590, y: 250,
+    model: true, rule: "Called only when the librarian found nothing. The model's answer goes through the same rules, and a person approves it." },
+  { id: "Planner", role: "Makes the steps and gives each one a marker", color: "#14b8a6", icon: "list", x: 590, y: 80,
+    rule: "Every step gets its own marker, new on every run." },
+  { id: "Gatekeeper", role: "Signs what is in scope and refuses the rest", color: "#ef4444", icon: "shield", x: 830, y: 80,
+    rule: "Nothing runs without its signature. Every decision goes into a sealed audit log." },
+  { id: "Agent", role: "Runs the step on the host (simulated here)", color: "#f97316", icon: "terminal", x: 1070, y: 80,
+    rule: "Asks the gatekeeper again right before each step. In this sandbox it runs nothing." },
+  { id: "Location memory", role: "Remembers where each test was found before", color: "#ca8a04", icon: "pin", x: 110, y: 250,
+    rule: "A remembered place that comes up empty is checked against a wide search before anything is called Missed." },
+  { id: "Query writer", role: "Writes the Splunk search from checked templates", color: "#ec4899", icon: "pen", x: 110, y: 420,
+    rule: "Builds searches only from proven templates and checked values, never from free text." },
+  { id: "Validator", role: "Refuses any search that is not read-only", color: "#16a34a", icon: "check", x: 350, y: 420,
+    rule: "A refused search is never sent." },
+  { id: "Splunk observer", role: "Reads Splunk and ties alerts and logs to steps", color: "#65a30d", icon: "search", x: 590, y: 420,
+    rule: "A broken connection is Could not check, never Missed." },
+  { id: "Falcon observer", role: "Reads CrowdStrike Falcon alerts", color: "#e11d48", icon: "eye", x: 830, y: 420,
+    rule: "Reads only. A broken connection is Could not check, never Missed." },
+  { id: "Analyst", role: "Records how each search changed, and why", color: "#0891b2", icon: "chart", x: 350, y: 590,
+    rule: "Its change log is sealed, so an edit to it is noticed." },
+  { id: "Matcher", role: "Joins what the tools saw into one verdict per step", color: "#8b5cf6", icon: "link", x: 590, y: 590,
+    rule: "Counts a forwarded alert once. A match without a marker is flagged for a person." },
+  { id: "Detection engineer", role: "Tests or builds a detection for each missed step", color: "#c026d3", icon: "wrench", x: 830, y: 590,
+    rule: "Proposes only. A person approves and deploys; it never changes Splunk or Falcon." },
+  { id: "Reporter", role: "Scores the run and compares it with the last one", color: "#2563eb", icon: "file", x: 1070, y: 590,
+    rule: "Steps that could not be checked or were not run are left out of the score." },
+  { id: "Referee", role: "Checks the ants' calls in the blind playground", color: "#78716c", icon: "flag", x: 1070, y: 420,
+    rule: "Knows the hidden truth of a blind run and fails it on any wrong call." },
 ];
-const ANT_EDGES = [["Intel", "Scenario builder"], ["Librarian", "Scenario builder"], ["Scenario builder", "Planner"],
+const ANT_EDGES = [["Intel", "Scenario builder"], ["Scenario builder", "Librarian"], ["Librarian", "Drafter"], ["Scenario builder", "Planner"],
   ["Planner", "Gatekeeper"], ["Gatekeeper", "Agent"], ["Agent", "Splunk observer"], ["Agent", "Falcon observer"],
   ["Location memory", "Query writer"], ["Query writer", "Validator"], ["Validator", "Splunk observer"],
   ["Splunk observer", "Analyst"], ["Splunk observer", "Matcher"], ["Falcon observer", "Matcher"],
@@ -1414,34 +1463,48 @@ function sv(tag, attrs, ...kids) {
   for (const kid of kids.flat()) if (kid) node.append(kid);
   return node;
 }
-const iconSvg = (name) => sv("svg", { viewBox: "0 0 24 24", "aria-hidden": "true" }, sv("path", { d: ICONS[name] }));
-const AM = { nodes: {}, edges: [], done: {}, built: false };
+/* One ant, front view, in its own colour, wearing the badge of its job. */
+function antAvatar(a) {
+  return sv("g", { class: "avatar" },
+    sv("path", { class: "aleg", d: "M-14 2l-15-8M-17 12h-16M-14 22l-14 10M14 2l15-8M17 12h16M14 22l14 10" }),
+    sv("path", { class: "aant", d: "M-6-34q-3-11-14-12M6-34q3-11 14-12" }),
+    sv("circle", { class: "atip", cx: -20, cy: -46, r: 2.8 }), sv("circle", { class: "atip", cx: 20, cy: -46, r: 2.8 }),
+    sv("ellipse", { class: "abody", cx: 0, cy: 13, rx: 19, ry: 22 }),
+    sv("circle", { class: "ahead", cx: 0, cy: -22, r: 14.5 }),
+    sv("circle", { class: "aeye", cx: -5.6, cy: -24, r: 3.8 }), sv("circle", { class: "aeye", cx: 5.6, cy: -24, r: 3.8 }),
+    sv("circle", { class: "apupil", cx: -5, cy: -23.4, r: 1.7 }), sv("circle", { class: "apupil", cx: 5, cy: -23.4, r: 1.7 }),
+    sv("circle", { class: "abadge", cx: 0, cy: 14, r: 12 }),
+    sv("g", { class: "aicon", transform: "translate(-8.4 5.6) scale(0.7)" }, sv("path", { d: ICONS[a.icon] })));
+}
+const miniAvatar = (a) => sv("svg", { viewBox: "-36 -52 72 92", class: "wav", "aria-hidden": "true" }, antAvatar(a));
+const antName = (a) => a.name || a.id;
+const AM = { nodes: {}, edges: [], done: {}, built: false, hover: null, card: null };
 
 /* What each ant did in one job, in order, from the events shown so far. */
 function antActs(j) {
   const out = [];
   for (const e of j.events.slice(0, j.shown)) {
-    if (e.type === "ant") out.push([e.ant === "Library" ? "Scenario builder" : e.ant, e.title]);
+    if (e.type === "ant") out.push([e.ant === "Library" ? "Scenario builder" : e.ant, e.title, e.status !== "ok"]);
     else if (e.type === "cycle_start") out.push(["Location memory", `Looked up where ${plural(e.steps.length, "step")} was found before`]);
     else if (e.type === "index_check") out.push(["Splunk observer", `Checked that index ${e.index} ${e.ok ? "exists" : "exists: it does not"}`]);
     else if (e.type === "search") out.push(["Query writer", `Wrote the ${e.kind} search`], ["Validator", `Checked the ${e.kind} search: read-only, allowed`]);
     else if (e.type === "rows") out.push(["Splunk observer", `Read ${plural(e.rows.length, "row")} from Splunk`]);
-    else if (e.type === "auth_failed" || e.type === "dropped" || e.type === "search_error") out.push(["Splunk observer", "Could not get an answer from Splunk"]);
+    else if (e.type === "auth_failed" || e.type === "dropped" || e.type === "search_error") out.push(["Splunk observer", "Could not get an answer from Splunk", true]);
     else if (e.type === "cycle_end") out.push(["Matcher", "Outcome: " + ((e.results || []).map((r) => r.outcome).join(", ") || "no verdict yet")]);
-    else if (e.type === "validator") out.push(["Validator", `${e.refused ? "Refused" : "Accepted"}: ${e.label}`]);
-    else if (e.type === "template") out.push(["Query writer", `Template ${e.refused ? "refused" : "accepted"}: ${e.label}`]);
+    else if (e.type === "validator") out.push(["Validator", `${e.refused ? "Refused" : "Accepted"}: ${e.label}`, !!e.refused]);
+    else if (e.type === "template") out.push(["Query writer", `Template ${e.refused ? "refused" : "accepted"}: ${e.label}`, !!e.refused]);
   }
   return out;
 }
 function antState() {
   const state = {};
-  for (const a of ROSTER) state[a.id] = { working: [], done: 0, last: null };
+  for (const a of ROSTER) state[a.id] = { working: [], done: 0, last: null, jobs: new Set(), flagged: 0 };
   for (const j of S.jobs.values()) {
     const acts = antActs(j), p = phase(j), live = p === "running" || p === "showing";
-    acts.forEach(([ant, text], i) => {
+    acts.forEach(([ant, text, flagged], i) => {
       const s = state[ant];
       if (!s) return;
-      s.done += 1;
+      s.done += 1; s.jobs.add(j.s.n); s.flagged += flagged ? 1 : 0;
       s.last = { text, job: j.s.n };
       if (live && i === acts.length - 1) s.working.push({ text, job: j.s.n });
     });
@@ -1462,25 +1525,61 @@ function buildAntMap() {
   for (const a of ROSTER) {
     const task = el("span", { text: a.role });
     const count = sv("text", {});
-    const g = sv("g", { class: "anode", style: `--ac:${a.color}`, transform: `translate(${a.x} ${a.y})` },
-      sv("circle", { r: 44, class: "aring" }), sv("circle", { r: 35, class: "adisc" }),
-      sv("g", { class: "aicon", transform: "translate(-16.8 -16.8) scale(1.4)" }, sv("path", { d: ICONS[a.icon] })),
-      sv("g", { class: "acount", transform: "translate(27 -27)" }, sv("circle", { r: 12 }), count),
-      sv("foreignObject", { x: -112, y: 42, width: 224, height: 84 }, el("div", { class: "alabel" }, el("b", { text: a.id }), task)));
+    const g = sv("g", { class: "anode", style: `--ac:${a.color}`, transform: `translate(${a.x} ${a.y})`, tabindex: "0",
+      role: "button", "aria-label": `${antName(a)}: ${a.role}` },
+      sv("circle", { cy: -4, r: 52, class: "aring" }), sv("ellipse", { cx: 0, cy: 38, rx: 24, ry: 5, class: "ashadow" }),
+      antAvatar(a),
+      sv("g", { class: "acount", transform: "translate(27 -40)" }, sv("circle", { r: 12 }), count),
+      sv("foreignObject", { x: -112, y: 46, width: 224, height: 64 }, el("div", { class: "alabel" }, el("b", { text: antName(a) }), task)));
+    for (const type of ["mouseenter", "focus"]) g.addEventListener(type, () => { AM.hover = a.id; showAntCard(); });
+    for (const type of ["mouseleave", "blur"]) g.addEventListener(type, () => { if (AM.hover === a.id) { AM.hover = null; showAntCard(); } });
     nodes.append(g);
     AM.nodes[a.id] = { g, task, count, role: a.role };
   }
   $("antMap").replaceChildren(edges, nodes);
+  AM.card = el("div", { class: "antcard", hidden: true, role: "tooltip" });
+  $("antMap").closest(".mapcard").append(AM.card);
   AM.built = true;
+}
+/* The card shown while an ant is hovered or focused: what it does, its rule, who it works with, its numbers. */
+function showAntCard() {
+  const a = ROSTER.find((r) => r.id === AM.hover);
+  if (!a || !AM.card) { if (AM.card) AM.card.hidden = true; return; }
+  const s = (AM.state || antState())[a.id];
+  const now = s.working[s.working.length - 1];
+  const from = ANT_EDGES.filter(([, to]) => to === a.id).map(([f]) => antName(ROSTER.find((r) => r.id === f)));
+  const to = ANT_EDGES.filter(([f]) => f === a.id).map(([, t]) => antName(ROSTER.find((r) => r.id === t)));
+  const stat = (n, label) => el("div", { class: "cstat" }, b(n), el("span", { text: label }));
+  AM.card.style.setProperty("--ac", a.color);
+  AM.card.className = "antcard" + (s.working.length ? " working" : "") + (s.done ? " used" : "");
+  put(AM.card,
+    el("div", { class: "ct" }, miniAvatar(a), b(antName(a)),
+      el("span", { class: "wchip", text: s.working.length ? (s.working.length > 1 ? `Working on ${s.working.length} jobs` : "Working") : "Idle" })),
+    el("div", { text: a.role + "." }),
+    el("div", { class: "cstats" }, stat(s.done, "tasks done"), stat(s.jobs.size, "jobs"), stat(s.flagged, "flagged"), stat(s.working.length, "working now")),
+    el("dl", {},
+      el("dt", { text: now ? "Doing now" : "Last task" }), el("dd", { text: now ? `Job #${now.job}: ${now.text}` : s.last ? `Job #${s.last.job}: ${s.last.text}` : "Nothing yet this session" }),
+      el("dt", { text: "Its rule" }), el("dd", { text: a.rule }),
+      el("dt", { text: "Gets work from" }), el("dd", { text: from.join(", ") || "The scenario coming in" }),
+      el("dt", { text: "Hands work to" }), el("dd", { text: to.join(", ") || "The people reading the report" }),
+      el("dt", { text: "Uses a model" }), el("dd", { text: a.model ? "Yes. It is the only ant that does; here the model is a scripted stand-in" : "No. Fixed rules only" })));
+  AM.card.hidden = false;
+  const host = AM.card.parentElement.getBoundingClientRect(), box = AM.nodes[a.id].g.getBoundingClientRect();
+  const width = AM.card.offsetWidth, height = AM.card.offsetHeight;
+  const left = Math.min(Math.max(box.left - host.left + box.width / 2 - width / 2, 8), Math.max(8, host.width - width - 8));
+  const below = box.bottom - host.top + 6;
+  AM.card.style.left = left + "px";
+  AM.card.style.top = (below + height > host.height - 8 ? Math.max(8, box.top - host.top - height - 6) : below) + "px";
 }
 async function runMapDemo() {
   const known = new Set(allTests().map((t) => t.id));
-  const ids = ["threat_scenario", "librarian", "gateways", "playground", "repeat_run", "detection_loop"].filter((id) => known.has(id));
+  const ids = ["threat_scenario", "librarian", "drafter", "gateways", "playground", "detection_loop"].filter((id) => known.has(id));
   try { adoptJobs((await postJSON("/api/jobs", { ids })).jobs, false); } catch (err) { alert("Could not start the jobs: " + err.message); }
 }
 function updateAntMap() {
   if (!AM.built) buildAntMap();
   const state = antState();
+  AM.state = state;
   let working = 0, tasks = 0;
   for (const a of ROSTER) {
     const s = state[a.id], node = AM.nodes[a.id], now = s.working[s.working.length - 1];
@@ -1507,15 +1606,17 @@ function updateAntMap() {
       : "Nothing is running. Start jobs here or in the Sandbox view; the ants light up as each one takes its turn." }));
   $("workersSub").textContent = `${working} working, ${ROSTER.length - working} idle`;
   $("antBadge").hidden = !working; $("antBadge").textContent = working;
+  if (AM.hover) showAntCard();
   put($("workers"), ROSTER.map((a) => {
     const s = state[a.id], now = s.working[s.working.length - 1];
     return el("div", { class: "wrow" + (s.working.length ? " working" : "") + (s.done ? " used" : ""), style: `--ac:${a.color}` },
-      el("div", { class: "wicon" }, iconSvg(a.icon)),
-      el("div", {}, el("div", { class: "wname", text: a.id }), el("div", { class: "wrole", text: a.role }),
+      el("div", {}, miniAvatar(a)),
+      el("div", {}, el("div", { class: "wname", text: antName(a) }), el("div", { class: "wrole", text: a.role }),
         now ? el("div", { class: "wtask" }, el("i", { text: `job #${now.job}: ` }), now.text)
           : s.last ? el("div", { class: "wtask" }, el("i", { text: `last, job #${s.last.job}: ` }), s.last.text) : null),
       el("div", { class: "wstate" }, el("span", { class: "wchip", text: s.working.length ? (s.working.length > 1 ? `Working on ${s.working.length} jobs` : "Working") : "Idle" }),
-        el("div", { text: `${plural(s.done, "task")} done` })));
+        el("div", { text: `${plural(s.done, "task")} · ${plural(s.jobs.size, "job")}` }),
+        s.flagged ? el("div", { text: `${s.flagged} flagged` }) : null));
   }));
 }
 

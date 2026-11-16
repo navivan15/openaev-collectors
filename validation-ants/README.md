@@ -176,6 +176,14 @@ below), on synthetic logs where the command line is in a field called `process`.
 differently, so treat the search as a starting point for the reviewer. The noise figure comes from the sandbox's
 synthetic day of admin activity, not from your environment.
 
+**When the library has no detection for the technique**, the detection engineer builds one from the test's own
+command: the tool and its first option (`netstat -ano`, `reg query`), with every marker removed first. When three or
+more such steps ran on one host it also builds a combined one that needs several of those tools within five minutes.
+Built detections are tested exactly like the library's (does it catch the step, how often would it fire on the
+day before) and are marked "built from the test", not reviewed. No model is involved. They are simple by design: a
+person should read one as a first idea for a rule. The email and firewall tests get none, because what stops those
+is the gateway's or the firewall's policy.
+
 The library has nine detections today: eight single-command ones and one that needs several discovery tools from the
 same host within five minutes. In the sandbox the single-command ones come out `too noisy` and the combined one comes
 out `ready for review`, which is the usual result in practice too.
@@ -239,9 +247,8 @@ looks for a public test and drafts an action from it. It does not invent a test 
    each time they are loaded the rules are checked again and a draft changed after its approval is dropped.
 
 A technique in a refused family (credential dumping, log removal and so on) is never looked up, even when the public
-library has a harmless-looking test for it. A technique with only tests that change something stays a gap: that is
-where step 2 (a model drafting from harmless building blocks, with the same rules and the same approval) would
-come in. It is not built.
+library has a harmless-looking test for it. A technique with only tests that change something stays a gap for the
+librarian; the drafter (below) is called for those.
 
 ```shell
 splunk-es/.venv/Scripts/python validation-ants/sandbox.py librarian          # a scenario with gaps, before and after
@@ -257,6 +264,34 @@ real Atomic Red Team index would close has not been measured: that needs the rea
 The rules are deliberately narrow. They will refuse harmless tests they do not recognise (most PowerShell, anything
 with a pipe into a script block, anything that reads a file). Widening them is a reviewed change to the rule tables
 in `librarian.py`, not something an ant does.
+
+## Drafter: the one ant that uses a model
+
+When the librarian finds nothing (no public test, or only tests that change something), the drafter ant
+(`ants/drafter.py`) asks a model. It is the only ant that uses one, and it is called only then.
+
+- **What is asked.** One Windows command that uses the same built-in tool the technique uses, in a form that only
+  reads. That is the "partial" kind of action the library already has, such as the port-proxy tool in show mode.
+- **What is sent.** The technique's id and public name. No scenario name, no host, no log.
+- **The answer is data.** It must be a small JSON object with a command and a reason. Chat text is thrown away.
+- **Same rules.** The command goes through the librarian's rules. A refused answer goes back to the model with the
+  reasons, three answers at most. A model that declines is a gap, not a failure.
+- **Never asked** about a refused family or a technique the library already covers.
+- **Same path after that.** What passes is a draft: sandbox trial, a person's approval, rules checked again on every
+  load. The model cannot approve anything.
+
+The model is any callable that takes the request text and returns the answer, so it can be swapped. For a model
+that only has a chat window, `Drafter.request()` gives the text to paste and `Drafter.read_answer()` checks what
+comes back. **No real model is connected here.** The sandbox uses a scripted stand-in that answers from a list, so
+the run is repeatable; whether a particular model (Copilot, for example) gives usable answers, or refuses to write
+such commands at all, is untested.
+
+```shell
+splunk-es/.venv/Scripts/python validation-ants/sandbox.py drafter
+```
+
+In that scenario the model is called 7 times for 4 gaps: two drafts pass (one after a first answer that created a
+scheduled task and was refused), one never gives a harmless answer, one declines.
 
 ## Email and firewall tests
 

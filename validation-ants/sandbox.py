@@ -50,6 +50,7 @@ from ants.detection_engineer import DetectionEngineer, evaluate, strip_markers  
 from ants.analyst import SearchAnalyst  # noqa: E402
 from ants.gatekeeper import Gatekeeper, Refused  # noqa: E402
 from ants.intel import TACTIC_ORDER, IntelAnt, IntelError, OpenCTIClient, Technique, Threat  # noqa: E402
+from ants.drafter import Drafter  # noqa: E402
 from ants.librarian import Librarian, LibrarianError, check_command  # noqa: E402
 from ants.scenario_builder import ScenarioBuilder  # noqa: E402
 from ants.matcher import Matcher, RuleBook  # noqa: E402
@@ -1696,9 +1697,31 @@ def s_librarian():
         fails.append(f"{len(r2['steps'])} step(s) scored after approval, {len(r2['not_run'])} not run")
     if not r2["audit_intact"]:
         fails.append("audit log chain is broken")
+
+    # The five new tests are missed, and the library has no detection for their techniques:
+    # the detection engineer builds one from each test's command, and one combined one.
+    proposals = r2["detection_proposals"]["proposals"]
+    built = [p for p in proposals if p.get("origin") == "built from the test"]
+    burst = next((p for p in built if p["kind"] == "burst"), None)
+    status = sorted(p["status"] for p in built if p["kind"] == "single")
+    if len(built) != 6 or status != ["ready for review"] * 4 + ["too noisy"]:
+        fails.append(f"built detections: {[(p['title'], p['status']) for p in built]}")
+    if not burst or (burst["status"], burst["caught"], burst["noise"]) != ("ready for review", 5, 0):
+        fails.append(f"combined built detection: {burst}")
+    if any("oaev" in p["spl"].lower() for p in built):
+        fails.append("a built detection keys on the test marker")
+    if burst:
+        ants2.engineer.approve(burst["id"], "detection.lead")
+        ants2.engineer.record_deployed(burst["id"], "splunk.admin")
+        r3 = ants2.run(ants2.planner.use_scenario(box["scenario"]), [HOST1],
+                       label="after people deployed the built detection")
+        if r3["totals"][DETECTED] != 6 or r3["totals"][MISSED]:
+            fails.append(f"after deployment: {r3['totals']}")
     return fails, ("9 techniques without an action: 5 drafts from harmless public tests (tried, approved by a "
                    "person, then run), 2 with only tests that change something, 1 not in the public library, "
-                   "1 refused family never looked up; unsafe, untried, nameless and changed drafts all refused")
+                   "1 refused family never looked up; unsafe, untried, nameless and changed drafts all refused; "
+                   "the 5 new tests were missed, the detection engineer built detections from their commands, "
+                   "and after a person deployed the combined one all 6 steps are Detected")
 
 
 # What the librarian's rules must allow (True) and refuse (False). Read-only tools in
@@ -1743,6 +1766,136 @@ def s_librarian_rules():
     total = len(RULE_CASES) + len(POWERSHELL_CASES)
     refused = sum(1 for cases in (RULE_CASES, POWERSHELL_CASES) for _, ok in cases if not ok)
     return fails, f"{total} commands checked: {total - refused} read-only ones allowed, {refused} refused"
+
+
+class ScriptedModel:
+    """Stands in for a model in the sandbox. It answers from a script, so a run is repeatable
+    and needs no model at all. A real model is any callable that takes the request text."""
+
+    def __init__(self, script):
+        self.script = {k: list(v) for k, v in script.items()}
+        self.seen = []
+        self.current = None
+
+    def __call__(self, request):
+        self.seen.append(request)
+        named = re.search(r"ATT&CK technique: (T\d{4}(?:\.\d{3})?)", request)
+        if named:
+            self.current = named.group(1)
+        answers = self.script.get(self.current) or ['{"command": null, "why": "No idea"}']
+        return answers.pop(0) if len(answers) > 1 else answers[0]
+
+
+MODEL_SCRIPT = {
+    # First answer changes the system and is refused; the model is told why and corrects itself.
+    "T1053.005": ['{"command": "schtasks /create /tn Updater /tr calc.exe /sc onlogon", "why": "Creates a task"}',
+                  '{"command": "schtasks /query /fo list", "why": "Uses the scheduled task tool to list the tasks"}'],
+    "T1547.001": [r'{"command": "reg query HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", '
+                  r'"why": "Reads the key a logon autostart would be written to"}'],
+    # Never gives a usable answer: chat text, a smuggled second command, then something that deletes.
+    "T1560.001": ["Sure! Here is a command you can use: tar -cf data.tar Documents",
+                  '{"command": "whoami & powershell -enc SQBFAFgA", "why": "x"}',
+                  r'{"command": "dir C:\\Users & del C:\\Users\\x", "why": "x"}'],
+    "T1999": ['{"command": null, "why": "I do not know a read-only way to imitate this"}'],
+}
+
+
+def s_drafter():
+    """No public test fits, so the drafter ant asks a model. Its answers are checked by the same rules; a person approves."""
+    work = WORK / "drafter"
+    ants, fails, box = Ants(), [], {}
+    librarian = Librarian(SAMPLE_ATOMICS, ants.planner.actions, ants.planner.not_simulated, work)
+    model = ScriptedModel(MODEL_SCRIPT)
+    drafter = Drafter(librarian, model, "scripted stand-in (no real model)")
+    wanted = [("T1082", "System Information Discovery", "discovery"),
+              ("T1049", "System Network Connections Discovery", "discovery"),
+              ("T1053.005", "Scheduled Task", "persistence"),
+              ("T1547.001", "Registry Run Keys", "persistence"),
+              ("T1560.001", "Archive via Utility", "collection"),
+              ("T1003.001", "LSASS Memory", "credential-access"),
+              ("T1999", "A technique no public test covers", "discovery")]
+    threat = Threat(id="drafter-demo", name="Quarterly purple scenario CONFIDENTIAL", kind="selection",
+                    description="Techniques the public library cannot fill",
+                    techniques=[Technique(id=t, name=n, tactic=c) for t, n, c in wanted])
+    names = {t: (n, c) for t, n, c in wanted}
+
+    def build(planner, builder):
+        draft = builder.draft(threat)
+        gaps = [c for c in draft["coverage"] if c["status"] in ("not simulated", "no action")]
+        emit("Scenario builder", f"Draft '{draft['id']}': {len(draft['tests'])} test(s) built from the "
+                                 f"action library; {len(gaps)} technique(s) cannot be tested",
+             status="stop" if gaps else "ok", data=draft)
+        scenario = builder.approve(draft["id"], "purple.lead")
+        box.update(draft=draft, scenario=scenario)
+        return planner.use_scenario(scenario)
+
+    def first():
+        tests = build(ants.planner, ants.builder)
+        missing = [c["technique"] for c in box["draft"]["coverage"] if c["status"] == "no action"]
+        found = librarian.fill_gaps(missing)
+        ready = [f for f in found if f["status"] == "draft"]
+        emit("Librarian", f"{len(missing)} technique(s) with no action: {len(ready)} draft(s) from "
+                          f"harmless public tests, {len(found) - len(ready)} left as gaps",
+             status="stop" if len(ready) < len(found) else "ok", data=found)
+        left = [f["technique"] for f in found if f["status"] in ("nothing harmless found", "not in the public library")]
+        asked = [drafter.draft(t, *names[t]) for t in left]
+        box["asked"] = {a["technique"]: a for a in asked}
+        drafted = [a for a in asked if a["status"] == "draft"]
+        emit("Drafter", f"Called for {len(left)} technique(s) the librarian could not fill: {len(drafted)} "
+                        f"draft(s) passed the rules after {drafter.calls} answer(s) from the model "
+                        f"({drafter.model_name})",
+             status="stop" if len(drafted) < len(asked) else "ok", data=asked)
+        for item in ready + drafted:
+            item["trial"] = trial_draft(librarian, item["draft_id"])["trial"]
+        emit("Librarian", f"Sandbox trial: {sum(1 for d in ready + drafted if d['trial']['passed'])} of "
+                          f"{len(ready + drafted)} draft(s) passed. They wait for a person; nothing is on "
+                          f"the allow-list yet", data=ready + drafted)
+        return tests
+
+    ants.run(first, [HOST1], label="before: what the library can test today", scenario=box)
+    asked = box["asked"]
+    status = {t: a["status"] for t, a in asked.items()}
+    if status != {"T1053.005": "draft", "T1547.001": "draft", "T1560.001": "refused by the rules",
+                  "T1999": "model declined"}:
+        fails.append(f"drafter results {status}")
+    tries = {t: [x["verdict"] for x in a["tries"]] for t, a in asked.items()}
+    if tries.get("T1053.005") != ["refused", "passed"] or tries.get("T1560.001") != ["refused"] * 3:
+        fails.append(f"model answers were judged {tries}")
+    if drafter.calls != 7:
+        fails.append(f"the model was called {drafter.calls} times, expected 7")
+    leaked = [s for s in model.seen if "CONFIDENTIAL" in s or "WS-TEST" in s or "purple" in s.lower()]
+    if leaked:
+        fails.append("the request to the model carries the scenario's name or a host")
+    before = drafter.calls
+    for technique, expected in (("T1003.001", "refused family"), ("T1082", "already in the library"),
+                                ("T1049", "draft")):
+        got = drafter.draft(technique, "x", "discovery")["status"]
+        if got != expected or drafter.calls != before:
+            fails.append(f"the model was asked about {technique} ({got})")
+    if librarian.approved_actions():
+        fails.append("a model draft is usable without a person's approval")
+    if any(a["action"]["fidelity"] != "partial" for a in librarian.drafts() if a["id"].startswith("ai_")):
+        fails.append("a model draft is not marked as a partial imitation")
+
+    for draft in librarian.drafts():
+        librarian.approve(draft["id"], "purple.lead")
+    approved = librarian.approved_actions()
+    ants2 = Ants(work=Path(tempfile.mkdtemp(prefix="oaev-ants-")), extra_actions=approved)
+    emit("Librarian", f"{len(approved)} action(s) approved by purple.lead and added to the allow-list",
+         data=[{"technique": a["techniques"][0], "status": "approved", "command": a["command"],
+                "draft_id": i, "name": a["description"]} for i, a in approved.items()])
+    r2 = ants2.run(lambda: build(ants2.planner, ants2.builder), [HOST1],
+                   label="after: the same scenario with the approved actions", scenario=box)
+    cover = {}
+    for c in box["draft"]["coverage"]:
+        cover[c["status"]] = cover.get(c["status"], 0) + 1
+    if cover != {"simulated": 2, "partial": 2, "not simulated": 1, "no action": 2}:
+        fails.append(f"coverage after approval {cover}")
+    if len(r2["steps"]) != 4 or r2["not_run"] or not r2["audit_intact"]:
+        fails.append(f"{len(r2['steps'])} step(s) scored after approval, {len(r2['not_run'])} not run")
+    return fails, ("4 gaps the public library could not fill: the model was called 7 times; 2 drafts passed the "
+                   "rules (one after a refused first answer), 1 never gave a harmless answer, 1 declined; "
+                   "the refused family and covered techniques were never sent to it; after approval 4 tests run")
 
 
 def survey(path):
@@ -1814,6 +1967,7 @@ def s_gateways():
 SCENARIOS = {
     "librarian": ("Librarian: a missing technique gets a harmless public test", s_librarian),
     "librarian_rules": ("Librarian: what its rules allow and refuse", s_librarian_rules),
+    "drafter": ("Drafter: a model drafts a test when no public test fits", s_drafter),
     "gateways": ("Email and firewall tests (Proofpoint and Check Point logs in Splunk)", s_gateways),
     "detection_loop": ("From Missed to Detected: proposal, approval, re-run", s_detection_loop),
     "detection_guards": ("Detection engineer: what it refuses", s_detection_guards),

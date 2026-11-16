@@ -38,7 +38,7 @@ SOURCE = {"library": "Atomic Red Team", "licence": "MIT",
           "url": "https://github.com/redcanaryco/atomic-red-team"}
 MAX_COMMAND = 400
 MAX_PARTS = 6
-_ID_RE = re.compile(r"^art_[a-z0-9_]{3,60}$")
+_ID_RE = re.compile(r"^(art|ai)_[a-z0-9_]{3,60}$")   # art_: public test, ai_: model draft
 _TECHNIQUE_RE = re.compile(r"^T\d{4}(\.\d{3})?$")
 _ARGUMENT_RE = re.compile(r"^[A-Za-z0-9 _.:\\/\-*%]{0,120}$")
 _WORD_RE = re.compile(r'"[^"]*"|\S+')
@@ -309,7 +309,8 @@ class Librarian:
     def drafts(self) -> list[dict[str, Any]]:
         if not self.store_dir.exists():
             return []
-        return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(self.store_dir.glob("art_*.json"))]
+        return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(self.store_dir.glob("*.json"))
+                if _ID_RE.match(p.stem)]
 
     # -- checks ---------------------------------------------------------------
 
@@ -372,23 +373,42 @@ class Librarian:
                     "why": f"{len(entry['tests'])} public test(s), each refused by the rules."}
         _, _, command, executor, test = sorted(passed, key=lambda p: p[:2])[0]
         guid = str(test["auto_generated_guid"])
-        draft_id = f"art_{technique.lower().replace('.', '_')}_{re.sub(r'[^0-9a-f]', '', guid.lower())[:8]}"
-        draft = {
-            "id": draft_id, "status": "draft", "technique": technique, "name": entry["name"],
-            "tactic": entry["tactic"], "executor": executor, "source_command": command,
-            "created": datetime.now(timezone.utc).isoformat(), "candidates": out["candidates"],
-            "trial": None,
-            "action": {
-                "description": f"{test.get('name')}. A public test, checked as read-only and marked.",
-                "command": wrap(command, executor), "techniques": [technique],
-                "category": "endpoint", "fidelity": "full", "expect": {"splunk": "detection"},
-                "source": {**SOURCE, "test": str(test.get("name")), "guid": guid},
-            },
-        }
-        self._save(draft)
+        draft = self.new_draft(
+            draft_id=f"art_{technique.lower().replace('.', '_')}_{re.sub(r'[^0-9a-f]', '', guid.lower())[:8]}",
+            technique=technique, name=entry["name"], tactic=entry["tactic"], command=command,
+            executor=executor, fidelity="full", candidates=out["candidates"],
+            description=f"{test.get('name')}. A public test, checked as read-only and marked.",
+            source={**SOURCE, "test": str(test.get("name")), "guid": guid})
+        draft_id = draft["id"]
         return {**out, "status": "draft", "draft_id": draft_id, "command": draft["action"]["command"],
                 "why": f"{len(passed)} of {len(entry['tests'])} public test(s) passed the rules. "
                        f"Waiting for a sandbox trial and a person's approval."}
+
+    def new_draft(self, *, draft_id: str, technique: str, name: str, tactic: str, command: str,
+                  executor: str, fidelity: str, description: str, source: dict[str, Any],
+                  candidates: list[dict[str, Any]]) -> dict[str, Any]:
+        """Write a draft action. The only way a draft comes to exist, whoever proposes it.
+
+        The command is checked here again, so nothing reaches the store unchecked.
+        """
+        if not _TECHNIQUE_RE.match(technique) or self._refused_family(technique):
+            raise LibrarianError(f"No draft can be written for {technique}")
+        checked, reasons = check_command(command, executor)
+        if checked is None:
+            raise LibrarianError(f"The command is not harmless by the rules: {'; '.join(reasons)}")
+        draft = {
+            "id": draft_id, "status": "draft", "technique": technique, "name": name, "tactic": tactic,
+            "executor": executor, "source_command": checked,
+            "created": datetime.now(timezone.utc).isoformat(), "candidates": candidates, "trial": None,
+            "action": {
+                "description": description, "command": wrap(checked, executor),
+                "techniques": [technique], "category": "endpoint", "fidelity": fidelity,
+                "expect": {"splunk": "detection"}, "source": source,
+            },
+        }
+        self._path(draft_id)                      # refuses an id that is not a draft id
+        self._save(draft)
+        return draft
 
     def fill_gaps(self, techniques: list[str]) -> list[dict[str, Any]]:
         return [self.find(t) for t in techniques]

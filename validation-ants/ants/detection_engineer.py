@@ -14,6 +14,12 @@ What it does, per run:
    would also have fired on ordinary activity in the day before (noise).
 5. Writes a proposal: ready for review, too noisy, or does not catch.
 
+When the library has no detection for a missed step's technique, it builds one
+from the test's own command (the tool and its first option), and, when three or
+more such steps ran on one host, a combined one that needs several of those
+tools within five minutes. Built detections are tested exactly like the
+library's and are marked as built, not reviewed.
+
 What it never does: change Splunk or Falcon. A proposal moves on only when a
 person approves it, and it counts as deployed only when a person records that
 they deployed it. Blocking (prevention) is only ever advice here.
@@ -21,6 +27,7 @@ they deployed it. Blocking (prevention) is only ever advice here.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import datetime, timedelta, timezone
@@ -34,6 +41,29 @@ MARKER_TEXT_RE = re.compile(
     r"oaev-(?:step|implant)-[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}"
     r"(?:-agent-[0-9a-f\-]{36})?", re.IGNORECASE)
 _TERM_RE = re.compile(r"^[A-Za-z0-9 /\-._]+$")
+
+
+_COMMAND_RE = re.compile(r"^(?:cmd\.exe /c |powershell\.exe -NoProfile -Command )(.+)$", re.IGNORECASE)
+BUILT_WHY = ("Built from the test's own command: it looks for the same tool and option. "
+             "It is not a reviewed detection.")
+
+
+def derive_terms(command: str) -> list[str] | None:
+    """The tool and its first option from a test's command, with every marker removed."""
+    match = _COMMAND_RE.match(strip_markers(command).strip())
+    if not match:
+        return None
+    words = re.split(r"\s*(?:&&|\|\||&|\||;|#)\s*", match.group(1).strip())[0].split()
+    if not words:
+        return None
+    tool = words[0].lower()
+    tool = tool[:-4] if tool.endswith(".exe") else tool
+    if not _TERM_RE.match(tool) or tool in ("rem", "echo"):
+        return None
+    terms = [tool]
+    if len(words) > 1 and _TERM_RE.match(words[1]) and len(words[1]) <= 24:
+        terms.append(words[1].lower())
+    return None if "oaev" in " ".join(terms) else terms
 
 
 class DetectionError(ValueError):
@@ -101,6 +131,7 @@ class DetectionEngineer:
         self.detections: list[dict[str, Any]] = data["detections"]
         self.no_behaviour: dict[str, str] = data.get("no_behaviour", {})
         self.raw_events = raw_events
+        self.validate_spl = validate_spl
         self.raw_index = raw_index
         self.store_path = Path(store_path)
         self.baseline = baseline
@@ -131,9 +162,55 @@ class DetectionEngineer:
         self.store_path.write_text(json.dumps(store, indent=2, default=str), encoding="utf-8")
 
     def deployed(self) -> list[dict[str, Any]]:
-        """Detections a person has recorded as deployed."""
+        """Detections a person has recorded as deployed, from the library or built."""
         store = self._load()
-        return [d for d in self.detections if store.get(d["id"], {}).get("status") == "deployed"]
+        out = [d for d in self.detections if store.get(d["id"], {}).get("status") == "deployed"]
+        for entry in store.values():
+            built = entry.get("definition")
+            if entry.get("status") == "deployed" and built and self._usable(built):
+                out.append(built)
+        return out
+
+    def _usable(self, det: dict[str, Any]) -> bool:
+        """A built detection still keys on plain behaviour terms and passes the validator."""
+        try:
+            terms = det.get("all") or [t for tool in det.get("tools", []) for t in tool]
+            if not terms or any("oaev" in t.lower() or not _TERM_RE.match(t) for t in terms):
+                return False
+            self.validate_spl(render_spl(det, self.raw_index))
+            return True
+        except Exception:
+            return False
+
+    def _build(self, step: Step) -> dict[str, Any] | None:
+        """A single-command detection built from one missed step's command."""
+        terms = derive_terms(step.command)
+        if not terms:
+            return None
+        det = {"id": "BUILT-" + re.sub(r"[^A-Z0-9]+", "-", f"{step.technique} {' '.join(terms)}".upper()).strip("-"),
+               "title": f"{' '.join(terms)} run", "kind": "single", "techniques": [step.technique],
+               "sourcetype": "XmlWinEventLog:Sysmon", "all": terms, "why": BUILT_WHY, "built": True}
+        if not self._usable(det):
+            return None
+        det["spl"] = render_spl(det, self.raw_index)
+        return det
+
+    def _build_burst(self, singles: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Several of the built tools from one host within five minutes."""
+        tools = sorted({tuple(d["all"]) for d in singles})
+        if len(tools) < 3:
+            return None
+        det = {"id": "BUILT-BURST-" + hashlib.sha256(repr(tools).encode()).hexdigest()[:8].upper(),
+               "title": "Several of these read-only tools from one host within five minutes",
+               "kind": "burst", "techniques": sorted({t for d in singles for t in d["techniques"]}),
+               "sourcetype": "XmlWinEventLog:Sysmon", "tools": [list(t) for t in tools],
+               "min_distinct": 3, "within_seconds": 300, "built": True,
+               "why": "One of these commands is ordinary admin work. Several different ones from the same "
+                      "host within minutes is not. Built from the tests' own commands; not a reviewed detection."}
+        if not self._usable(det):
+            return None
+        det["spl"] = render_spl(det, self.raw_index)
+        return det
 
     def approve(self, proposal_id: str, by: str) -> dict[str, Any]:
         store = self._load()
@@ -194,6 +271,8 @@ class DetectionEngineer:
         store = self._load()
         covers: dict[str, list[Step]] = {}
         own: dict[str, list[int]] = {}
+        built: dict[str, dict[str, Any]] = {}          # detections built in this call, by id
+        built_for: dict[str, list[Step]] = {}          # host -> steps that got a built detection
         for step in missed:
             marker = step.id.lower()
             own[step.id] = [i for i, e in enumerate(events)
@@ -203,6 +282,12 @@ class DetectionEngineer:
             if step.action in self.no_behaviour:
                 reason = self.no_behaviour[step.action]
             elif not candidates:
+                det = self._build(step) if own[step.id] else None
+                if det:
+                    built.setdefault(det["id"], det)
+                    covers.setdefault(det["id"], []).append(step)
+                    built_for.setdefault(step.host, []).append(step)
+                    continue
                 reason = f"No reviewed detection for {step.technique} in the library yet."
             elif not own[step.id]:
                 reason = "The step left no endpoint log to test a rule against."
@@ -213,7 +298,15 @@ class DetectionEngineer:
             out["no_proposal"].append({"test_id": step.test_id, "host": step.host,
                                        "technique": step.technique, "why": reason})
 
-        for det in self.detections:
+        # Three or more built tools on one host: also try them as one combined detection.
+        burst = self._build_burst(list(built.values()))
+        if burst:
+            together = [s for steps in built_for.values() if len(steps) >= 3 for s in steps]
+            if together:
+                built[burst["id"]] = burst
+                covers[burst["id"]] = together
+
+        for det in [*self.detections, *built.values()]:
             steps = covers.get(det["id"])
             if not steps:
                 continue
@@ -232,6 +325,7 @@ class DetectionEngineer:
             proposal = {
                 "id": det["id"], "title": det["title"], "kind": det["kind"], "why": det["why"],
                 "spl": det["spl"], "status": status,
+                "origin": "built from the test" if det.get("built") else "library",
                 "covers": [{"test_id": s.test_id, "technique": s.technique, "host": s.host,
                             "caught": s in caught} for s in steps],
                 "caught": len(caught), "of": len(steps),
@@ -242,6 +336,8 @@ class DetectionEngineer:
             out["proposals"].append(proposal)
             if already not in ("approved", "deployed"):
                 store[det["id"]] = dict(proposal)
+                if det.get("built"):
+                    store[det["id"]]["definition"] = det
         out["proposals"].sort(key=lambda p: (p["status"] != "ready for review", -p["caught"]))
         self._save(store)
         return out
