@@ -1,6 +1,6 @@
 # Status and hand-over
 
-Where the work stands, what is proven, what is not, and how to pick it up again. Last updated 2026-11-15.
+Where the work stands, what is proven, what is not, and how to pick it up again. Last updated 2026-11-18.
 
 ## What this is
 
@@ -55,6 +55,8 @@ testing only.
 | The searches behave the same on a real Splunk Enterprise | Lab 36 of 36, synthetic events only |
 | The install steps in SETUP.md work on a clean Python environment | Run once on 2026-11-15 in a new environment: 28 of 28, 40 of 40, and the unit tests at 102 passed with the 1 old failure |
 | A search-only Splunk account is enough, and cannot change Splunk | Lab group `reader` |
+| The ants run on a machine that has no OpenAEV client (`pyoaev`) | 2026-11-18, in an environment without it: sandbox 28 of 28, 100 blind runs with 0 wrong calls. The stand-in was compared with the real client (versions 2.260704.0 and 3.261116.1) on 25,000 cases: no differences |
+| The newest OpenAEV client works as well as the pinned one | 2026-11-18, `pyoaev 3.261116.1`: sandbox 28 of 28, harness 40 of 40, unit tests 102 passed with the 1 old failure |
 
 ## Not proven
 
@@ -77,6 +79,8 @@ Each of these is unknown until it is tried on the real thing.
 - A defence whose alert does not carry the marker is not tied to its step.
 - Built detections are simple: a first idea for a rule, not a finished one.
 - The blind playground does not draw the email and firewall test types.
+- Without the OpenAEV client the ants use a stand-in. It cannot report to an OpenAEV platform, and the
+  collector, its harness and its unit tests still need the real client.
 
 ## Parked
 
@@ -133,6 +137,8 @@ These are the owner's rules and they still hold.
 | `b32ef0c` | Drafter ant, built detections, ant avatars with hover |
 | `17684a8` | Librarian measured against the real Atomic Red Team index; rules tightened |
 | `bf25015` | Change-and-undo tests (parked) |
+| `eb511ba`, `32bd7cc` | These documents; line endings for the lab script |
+| `bac84ac` | The ants run without the OpenAEV client, using a stand-in (`ants/oaev_standin.py`) |
 
 ## To continue in a new session
 
