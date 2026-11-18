@@ -154,3 +154,27 @@ Next I want: <say it here>
 ```
 
 If the copy on the PC is gone, clone the repository first and follow SETUP.md, Level 1.
+
+### On a machine where the OpenAEV client cannot be installed
+
+For example, a machine whose packages come from a company store that does not carry `pyoaev`. Paste this
+instead:
+
+```
+Set up the OpenAEV validation ants on this machine.
+Repo: navivan15/openaev-collectors (private), branch work.
+First read validation-ants/docs/STATUS.md and follow its rules.
+Then follow validation-ants/docs/SETUP.md, section
+"If the OpenAEV client cannot be installed".
+Do not install pyoaev: the ants use a built-in stand-in when it is missing.
+Install only requests, pydantic, pydantic-settings and pyyaml,
+through the company package store.
+Run only: validation-ants/sandbox.py all
+Expected first line: OpenAEV client: built-in stand-in (pyoaev is not installed)
+Expected last line: 28/28 scenarios passed
+Skip the collector harness and pytest. They need the real client and fail here;
+that is expected.
+Mocks only. Connect to nothing real.
+```
+
+Do not work around the package store to get `pyoaev`. If it is wanted later, ask for it to be added.
