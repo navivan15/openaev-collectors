@@ -40,6 +40,45 @@ cd ..
 `pyoaev` is OpenAEV's own Python client; the collector code needs it even on mocks. The `.venv` folder is not
 committed, so this step is needed on every fresh copy.
 
+The newest client also works: `pyoaev 3.261116.1` gives the same results as the pinned `2.260704.0` on every
+mock check (tried 2026-11-18). Python 3.11 is the oldest version `pyoaev` supports; only 3.12 was tried here.
+
+#### If the OpenAEV client cannot be installed
+
+On a machine where `pyoaev` is not available (for example, a company package store that does not carry it),
+leave it out. The ants then use a small stand-in for it that is part of this repository
+(`ants/oaev_standin.py`).
+
+```powershell
+cd splunk-es
+py -3.12 -m venv .venv
+.\.venv\Scripts\python -m pip install "requests~=2.33.0" "pydantic>=2.11.7" "pydantic-settings>=2.11.0" pyyaml
+cd ..
+.\splunk-es\.venv\Scripts\python validation-ants\sandbox.py all
+```
+
+Expected: the first line says `OpenAEV client: built-in stand-in (pyoaev is not installed)`, and the last line
+says `28/28 scenarios passed`.
+
+| Works without the client | Still needs the real client |
+|---|---|
+| All 28 ants scenarios (`sandbox.py all`) | The collector harness (`mock_e2e_harness.py`, 40 scenarios) |
+| The blind playground (`sandbox.py playground_many 100`) | The collector's unit tests (`pytest`) |
+| The demo page server starts and shows the attack library | The collector itself, and anything that reports to a real OpenAEV |
+
+Not tried without the client: running a job from the demo page, and the lab Splunk checks. Both go through
+the same code as the 28 scenarios, so they are expected to work.
+
+The stand-in is our own code, not a copy of the client. It covers only the five pieces the ants borrow, and it
+cannot talk to an OpenAEV platform. Where the real client is installed, the real client is always used. On a
+machine that has the real client, this compares the two piece by piece:
+
+```powershell
+.\splunk-es\.venv\Scripts\python validation-ants\check_standin.py
+```
+
+Expected last line: `no differences`.
+
 ### 3. Check that everything works
 
 ```powershell
@@ -158,6 +197,7 @@ Then close the `sleep` terminal.
 | `SANDBOX_PORT_BASE` | `sandbox.py` | First of three mock ports (default 18189) |
 | `SANDBOX_CUSTOM` | `sandbox.py custom` | The attack-library pick, as JSON |
 | `PLAYGROUND_SEED` | `sandbox.py playground` | Repeat one blind run |
+| `OAEV_FORCE_STANDIN` | the ants | Set to `1` to use the stand-in for the OpenAEV client even where the real client is installed (for testing the stand-in) |
 | `HARNESS_SPLUNK_PORT`, `HARNESS_OPENAEV_PORT` | `mock_e2e_harness.py` | Mock ports (defaults 18089, 18080) |
 | `HARNESS_EVENTS_STREAM` | both | A file the run writes its events to, one JSON line each; the demo page reads it |
 | `OAEV_LAB_ENV` | `lab_splunk.py` | Path of the lab settings file |

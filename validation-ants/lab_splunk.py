@@ -502,6 +502,8 @@ def check_gateways():
 def main():
     logging.basicConfig(level=logging.CRITICAL)
     print(f" LAB SPLUNK {LAB.version()} at {MANAGEMENT} (this machine only); Falcon is a mock")
+    if sandbox.client_notice():
+        print(" " + sandbox.client_notice())
     for name in LAB_INDEXES:
         LAB.ensure_index(name)
     sandbox.start(sandbox.FalconMock, sandbox.FALCON_PORT)

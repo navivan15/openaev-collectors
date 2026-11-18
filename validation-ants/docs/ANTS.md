@@ -65,6 +65,8 @@ The main class or function of each file, so the next person (or session) can fin
 | `ants/reversible.py` | `check_reversible(action, payload)`, `load_reversible()` |
 | `sandbox.py` | `Ants` (all the ants wired together on mocks), the mock Splunk, Falcon and OpenCTI servers, and the 28 scenarios |
 | `lab_splunk.py` | The same checks against a real Splunk Enterprise in a local container |
+| `ants/oaev_standin.py` | A stand-in for the OpenAEV Python client, used only where `pyoaev` is not installed: `ensure()`, `notice()`, `similarity()`, `DetectionHelper` |
+| `check_standin.py` | Compares that stand-in with the real client, on a machine that has both |
 
 ## How the ants are wired together
 

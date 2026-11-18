@@ -22,7 +22,9 @@ Several sandboxes can run side by side: SANDBOX_PORT_BASE moves the three mock
 ports, and HARNESS_EVENTS_STREAM names a file that gets one JSON line per event
 as it happens.
 
-Run it with the splunk-es virtualenv's Python (it has pyoaev and requests).
+Run it with the splunk-es virtualenv's Python (it has pyoaev and requests). Where the OpenAEV
+client (pyoaev) is not installed, the ants use a small built-in stand-in for it and say so in the
+output; see ants/oaev_standin.py and docs/SETUP.md.
 """
 
 import io
@@ -56,6 +58,7 @@ from ants.scenario_builder import ScenarioBuilder  # noqa: E402
 from ants.matcher import Matcher, RuleBook  # noqa: E402
 from ants.models import COULD_NOT_CHECK, DETECTED, MISSED, PREVENTED  # noqa: E402
 from ants.observers import FalconHttpClient, FalconObserver, SplunkObserver  # noqa: E402
+from ants.oaev_standin import notice as client_notice  # noqa: E402
 from ants.pipeline import run_validation  # noqa: E402
 from ants.planner import CATALOGUE_PATH, Planner  # noqa: E402
 from ants.reversible import ReversibleError, check_reversible, load_reversible  # noqa: E402
@@ -2128,6 +2131,8 @@ SCENARIOS = {
 
 
 def run_all():
+    if client_notice():
+        print(client_notice())
     print(f"{'scenario':<24} {'result':<6} detail")
     print("-" * 110)
     failed = []
@@ -2166,6 +2171,8 @@ def main():
         import contextlib
         with contextlib.redirect_stdout(io.StringIO()):
             tally, wrong = playground_many(count, int(sys.argv[3]) if len(sys.argv) > 3 else 1)
+        if client_notice():
+            print(client_notice())
         print(f"{count} blind runs, {sum(tally.values())} steps")
         for call, n in sorted(tally.items(), key=lambda kv: -kv[1]):
             print(f"  {n:5d}  {call}")
@@ -2180,6 +2187,8 @@ def main():
     splunk, falcon = start(SplunkMock, SPLUNK_PORT), start(FalconMock, FALCON_PORT)
     start(OpenCTIMock, OPENCTI_PORT)
     print("=" * 78 + f"\n SCENARIO: {SCENARIO} - {title}\n" + "=" * 78)
+    if client_notice():
+        print(" " + client_notice())
     fails, note = runner()
     print("=" * 78)
     print(("SANDBOX FAIL " + note + " :: " + "; ".join(fails)) if fails else "SANDBOX PASS " + note)
